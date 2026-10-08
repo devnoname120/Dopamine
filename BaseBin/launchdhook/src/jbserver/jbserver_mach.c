@@ -4,6 +4,7 @@
 #include <bsm/audit.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
+#include <libjailbreak/roothider/bootlog.h>
 extern int fileport_makefd (mach_port_t port);
 
 int systemwide_process_checkin(audit_token_t *processToken, char **rootPathOut, char **bootUUIDOut, char **sandboxExtensionsOut, bool *fullyDebuggedOut, bool *forceCSAdhocOut);
@@ -59,6 +60,13 @@ int jbserver_received_mach_message(audit_token_t *auditToken, struct jbserver_ma
 	if (jbsMachMsg->action == JBSERVER_MACH_CHECKIN) {
 		if (msgSize < sizeof(struct jbserver_mach_msg_checkin)) return -1;
 		struct jbserver_mach_msg_checkin *checkinMsg = (struct jbserver_mach_msg_checkin *)jbsMachMsg;
+		pid_t checkinPid = audit_token_to_pid(*auditToken);
+		char checkinPath[PROC_PIDPATHINFO_MAXSIZE] = {0};
+		proc_pidpath(checkinPid, checkinPath, sizeof(checkinPath));
+		char checkinPhase[384];
+		snprintf(checkinPhase, sizeof(checkinPhase), "jbserver: mach checkin begin pid=%d path=%s",
+			checkinPid, checkinPath[0] ? checkinPath : "(unknown)");
+		roothide_bootlog(checkinPhase);
 
 		size_t replySize = sizeof(struct jbserver_mach_msg_checkin_reply);
 		replyData = malloc(replySize);
@@ -68,6 +76,10 @@ int jbserver_received_mach_message(audit_token_t *auditToken, struct jbserver_ma
 		char *jbRootPath = NULL, *bootUUID = NULL, *sandboxExtensions = NULL;
 		bool fullyDebugged = false;
 		int result = systemwide_process_checkin(auditToken, &jbRootPath, &bootUUID, &sandboxExtensions, &reply->fullyDebugged, &reply->forceCSAdhoc);
+		snprintf(checkinPhase, sizeof(checkinPhase),
+			"jbserver: mach checkin end pid=%d result=%d sandbox=%d",
+			checkinPid, result, sandboxExtensions && sandboxExtensions[0]);
+		roothide_bootlog(checkinPhase);
 
 		reply->base.msg.magic         = jbsMachMsg->magic;
 		reply->base.msg.action        = jbsMachMsg->action;

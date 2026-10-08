@@ -7,6 +7,14 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UPSTREAM_REVISION = "939a3a21400f0dc6d6163b2b5999ba2ace0d2732"
+PORT_SUBMODULE_REVISIONS = {
+    "BaseBin/XPF": "7751467e2d7f51cde692108a9f2ac1b63d5c6544",
+    "BaseBin/opainject": "bd60149a9d324b5e26c769ffe358eb9935f90b8b",
+}
+PORT_SUBMODULE_URLS = {
+    "BaseBin/XPF": "https://github.com/devnoname120/XPF",
+    "BaseBin/opainject": "https://github.com/devnoname120/opainject",
+}
 
 
 def git(*args: str) -> bytes:
@@ -33,6 +41,21 @@ class PortIntegrityTests(unittest.TestCase):
                 file = ROOT / path
                 self.assertTrue(file.is_file(), f"Missing upstream component: {path}")
                 self.assertEqual(file.read_bytes(), git("show", f"{UPSTREAM_REVISION}:{path}"))
+
+    def test_first_load_spawn_mode_is_published_before_spawn_hook_install(self):
+        main = (ROOT / "BaseBin/launchdhook/src/main.m").read_text()
+        postinit_decl = re.search(r"void\s+roothide_launchd_postinit\s*\(bool firstLoad\);", main)
+        self.assertIsNotNone(postinit_decl)
+
+        publish = main.find("launchdhookFirstLoad = firstLoad;")
+        install = main.find("initSpawnHooks();")
+        self.assertNotEqual(publish, -1, "first-load spawn mode must be published in launchd initializer")
+        self.assertNotEqual(install, -1)
+        self.assertLess(
+            publish,
+            install,
+            "launchdhookFirstLoad must be set before the spawn hook becomes live",
+        )
 
     def test_upstream_kernel_compatibility_is_preserved(self):
         paths = (
@@ -75,12 +98,20 @@ class PortIntegrityTests(unittest.TestCase):
         implementations = re.findall(r"&(g\w+Domain)\s*,", server)
         self.assertEqual(implementations[4:6], ["gRootHideDomain", "gDopamineDomain"])
 
-    def test_upstream_submodule_revisions_are_preserved(self):
+    def test_reviewed_submodule_revisions_are_pinned(self):
         for path in ("BaseBin/ChOma", "BaseBin/XPF", "BaseBin/opainject", "BaseBin/_external/modules/litehook"):
             with self.subTest(path=path):
-                expected = git("rev-parse", f"{UPSTREAM_REVISION}:{path}").strip()
+                expected = PORT_SUBMODULE_REVISIONS.get(path)
+                if expected is None:
+                    expected = git("rev-parse", f"{UPSTREAM_REVISION}:{path}").strip().decode()
                 actual = git("-C", path, "rev-parse", "HEAD").strip()
-                self.assertEqual(actual, expected)
+                self.assertEqual(actual.decode(), expected)
+
+        gitmodules = (ROOT / ".gitmodules").read_text()
+        for path, url in PORT_SUBMODULE_URLS.items():
+            with self.subTest(path=path, url=url):
+                self.assertIn(f"path = {path}", gitmodules)
+                self.assertIn(f"url = {url}", gitmodules)
 
     def test_no_unresolved_merge_markers(self):
         paths = git("ls-files", "-z").decode().split("\0")

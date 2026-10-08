@@ -10,12 +10,18 @@
 #include <unistd.h>
 
 static xpc_object_t observed_reply;
-static unsigned handler_calls, collection_calls, trustcache_calls;
+static unsigned handler_calls, collection_calls, trustcache_calls, synthetic_get_calls;
 static int collection_result, trustcache_result;
 static uintptr_t observed[8];
 static const char *scenario;
 
 static bool roothide_handle_xpc_msg(xpc_object_t message) { return false; }
+static xpc_object_t (*real_dictionary_get_value)(xpc_object_t, const char *) = xpc_dictionary_get_value;
+static xpc_object_t fixture_dictionary_get_value(xpc_object_t message, const char *name)
+{
+    if (!strcmp(name, "caller-token") || !strcmp(name, "output")) synthetic_get_calls++;
+    return real_dictionary_get_value(message, name);
+}
 static void fixture_audit_token(xpc_object_t message, audit_token_t *token) { memset(token, 0, sizeof(*token)); }
 static xpc_object_t fixture_create_reply(xpc_object_t message) { return xpc_dictionary_create_empty(); }
 static int fixture_send_reply(xpc_object_t reply)
@@ -27,6 +33,7 @@ static int fixture_send_reply(xpc_object_t reply)
 static mach_port_t fixture_extract_port(xpc_object_t message, const char *name) { return MACH_PORT_NULL; }
 static void fixture_set_port(xpc_object_t message, const char *name, mach_port_t port) {}
 #define xpc_dictionary_get_audit_token fixture_audit_token
+#define xpc_dictionary_get_value fixture_dictionary_get_value
 #define xpc_dictionary_create_reply fixture_create_reply
 #define xpc_pipe_routine_reply fixture_send_reply
 #define xpc_dictionary_extract_mach_recv fixture_extract_port
@@ -130,6 +137,12 @@ static int dispatch_case(void)
         descriptions[0].out = true;
         descriptions[1] = (jbserver_arg){.name = "tail", .type = JBS_TYPE_UINT64, .out = true};
         valid = true;
+    } else if (!strcmp(scenario, "caller-token-no-lookup")) {
+        descriptions[0] = (jbserver_arg){.name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN};
+        valid = true;
+    } else if (!strcmp(scenario, "output-no-lookup")) {
+        descriptions[0] = (jbserver_arg){.name = "output", .type = JBS_TYPE_UINT64, .out = true};
+        valid = true;
     } else if (!strcmp(scenario, "data-capacity") || !strcmp(scenario, "eight-slots")) {
         static const char *names[] = {"a", "b", "c", "d", "e", "f", "g", "h"};
         for (unsigned i = 0; i < 8; i++) {
@@ -164,6 +177,7 @@ static int dispatch_case(void)
         }
     }
     if (!strcmp(scenario, "data-followed-by-bool")) failures += observed[1] != 3 || observed[2] != 1;
+    if (!strcmp(scenario, "caller-token-no-lookup") || !strcmp(scenario, "output-no-lookup")) failures += synthetic_get_calls != 0;
     if (!strcmp(scenario, "eight-slots")) failures += observed[7] != 8;
     if (!strcmp(scenario, "data-output-followed-by-integer") && observed_reply) {
         size_t length = 0;

@@ -4,6 +4,7 @@
 #include "crashreporter.h"
 #include "update.h"
 #include <libjailbreak/util.h>
+#include <libjailbreak/roothider/bootlog.h>
 #include <substrate.h>
 #include <mach-o/dyld.h>
 #include <sys/param.h>
@@ -98,6 +99,9 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		uint32_t bufsize = sizeof(executablePath);
 		_NSGetExecutablePath(&executablePath[0], &bufsize);
 		if (!strcmp(path, executablePath)) {
+			char phase[384];
+			snprintf(phase, sizeof(phase), "launchd: self-spawn hook matched path=%s executable=%s", path, executablePath);
+			roothide_bootlog(phase);
 			// This spawn will perform a userspace reboot...
 			// Instead of the ordinary hook, we want to reinsert this dylib
 			// This has already been done in envp so we only need to call the original posix_spawn

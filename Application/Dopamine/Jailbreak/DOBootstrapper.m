@@ -46,6 +46,8 @@ struct hfs_mount_args {
 
 NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
 
+NSString *jbrootPrefix(NSString *path);
+
 @implementation DOBootstrapper
 
 - (instancetype)init
@@ -535,6 +537,42 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
     return nil;
 }
 
+- (NSError *)refreshJailbreakAppRegistrations
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray *enabledPackageManagers = [[DOUIManager sharedInstance] enabledPackageManagers];
+    for (NSDictionary *packageManagerDict in enabledPackageManagers) {
+        NSString *application = packageManagerDict[@"Application"];
+        if (![application isKindOfClass:NSString.class] || application.length == 0) {
+            return [NSError errorWithDomain:bootstrapErrorDomain
+                                       code:BootstrapErrorCodeFailedFinalising
+                                   userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Missing application metadata for %@", packageManagerDict[@"Display Name"] ?: @"package manager"]}];
+        }
+
+        NSString *applicationPath = jbrootPrefix([@"/Applications" stringByAppendingPathComponent:application]);
+        if (![fm fileExistsAtPath:applicationPath]) continue;
+
+        int r = exec_cmd_trusted(JBROOT_PATH("/usr/bin/uicache"), "-p", applicationPath.fileSystemRepresentation, NULL);
+        if (r != 0) {
+            return [NSError errorWithDomain:bootstrapErrorDomain
+                                       code:BootstrapErrorCodeFailedFinalising
+                                   userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to register %@: %d", packageManagerDict[@"Display Name"] ?: application, r]}];
+        }
+    }
+
+    NSString *rootHideManagerPath = jbrootPrefix(@"/Applications/RootHide.app");
+    if ([fm fileExistsAtPath:rootHideManagerPath]) {
+        int r = exec_cmd_trusted(JBROOT_PATH("/usr/bin/uicache"), "-p", rootHideManagerPath.fileSystemRepresentation, NULL);
+        if (r != 0) {
+            return [NSError errorWithDomain:bootstrapErrorDomain
+                                       code:BootstrapErrorCodeFailedFinalising
+                                   userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to register RootHide Manager: %d", r]}];
+        }
+    }
+
+    return nil;
+}
+
 - (BOOL)shouldInstallPackage:(NSString *)identifier
 {
     NSString *bundledVersion = gBundledPackages[identifier];
@@ -658,7 +696,6 @@ uint64_t jbrand_current();
 int is_jbroot_name(char* name);
 NSString* find_jbroot(BOOL force);
 ////////////////////////////////////////
-NSString* jbrootPrefix(NSString *path);
 NSString* rootfsPrefix(NSString* path);
 ///////////////////////////////////////////////////////
 
@@ -1258,6 +1295,9 @@ int getCFMajorVersion(void)
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"updatelinks.sh returned %d\n", r]}];
         }
     }
+
+    NSError *registrationError = [self refreshJailbreakAppRegistrations];
+    if (registrationError) return registrationError;
     
     BOOL shouldInstallLibkrw = [self shouldInstallPackage:@"libkrw0-dopamine"];
     roothide_bootlog("bootstrap: checking bundled packages");

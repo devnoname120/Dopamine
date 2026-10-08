@@ -66,5 +66,6 @@ int kalloc(uint64_t *addr, uint64_t size);
 int kfree(uint64_t addr, uint64_t size);
 
 bool is_kcall_available(void);
+bool is_kcall_initialized(void);
 
 #endif

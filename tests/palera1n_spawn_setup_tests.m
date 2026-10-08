@@ -172,21 +172,19 @@ static int fixture_posix_spawn(pid_t *pid, const char *path, const posix_spawn_f
 
 static dispatch_semaphore_t fixture_dispatch_semaphore_create(long value)
 {
-    (void)value;
-    return (dispatch_semaphore_t)(uintptr_t)1;
+    return dispatch_semaphore_create(value);
 }
 
 static dispatch_queue_t fixture_dispatch_queue_create(const char *label, dispatch_queue_attr_t attr)
 {
-    (void)label; (void)attr;
-    return (dispatch_queue_t)(uintptr_t)1;
+    return dispatch_queue_create(label, attr);
 }
 
 static dispatch_source_t fixture_dispatch_source_create(dispatch_source_type_t type, uintptr_t handle,
                                                         unsigned long mask, dispatch_queue_t queue)
 {
-    (void)type; (void)handle; (void)mask; (void)queue;
-    return (dispatch_source_t)(uintptr_t)1;
+    (void)type; (void)handle; (void)mask;
+    return dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, queue);
 }
 
 static void fixture_dispatch_source_set_cancel_handler(dispatch_source_t source, dispatch_block_t handler)

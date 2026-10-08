@@ -37,6 +37,7 @@ bool gInEarlyBoot = true;
 #define abort_with_reason(reason_namespace,reason_code,reason_string,reason_flags)  launchd_panic("%s",reason_string)
 void roothide_launchd_preinit();
 void roothide_launchd_postinit(bool firstLoad);
+extern bool launchdhookFirstLoad;
 
 extern void systemwide_domain_set_enabled(bool enabled);
 
@@ -97,7 +98,12 @@ int sysctlbyname_hook(const char *name, void *oldp, size_t *oldlenp, void *newp,
 
 	int r = sysctlbyname_orig(name, oldp, oldlenp, newp, newlen);
 	if (!strcmp(name, "kern.willuserspacereboot")) {
-		draw_boot_logo(JBROOT_PATH("/basebin/bootlogo.jp2"));
+		if (__builtin_available(iOS 19.0, *)) {
+			// CoreGraphics rendering from launchd's shutdown path can crash PID 1 on iOS 26.
+		}
+		else {
+			draw_boot_logo(JBROOT_PATH("/basebin/bootlogo.jp2"));
+		}
 	}
 	return r;
 }
@@ -145,12 +151,13 @@ __attribute__((constructor)) static void initializer(void)
 		}
 
 	}
-	else {
+		else {
 		// Here we should have been injected into a live launchd on the fly
 		// In this case, we are not in early boot...
 		gInEarlyBoot = false;
-		firstLoad = true;
-	}
+			firstLoad = true;
+		}
+		launchdhookFirstLoad = firstLoad;
 
 	int err = boomerang_recoverPrimitives(firstLoad, true);
 	roothide_bootlog("launchd: primitive recovery returned");
@@ -182,7 +189,7 @@ __attribute__((constructor)) static void initializer(void)
 		roothide_bootlog("launchd: hookd initialization complete");
 	}
 
-	roothide_bootlog("launchd: installing service hooks");
+		roothide_bootlog("launchd: installing service hooks");
 	initXPCHooks();
 	initDaemonHooks();
 	initSpawnHooks();

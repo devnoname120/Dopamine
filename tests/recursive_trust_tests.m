@@ -100,7 +100,10 @@ int main(int argc, const char **argv)
     if (!strcmp(scenario, "arch-arm64")) {
         subtype = CPU_SUBTYPE_ARM64_ALL;
         preferred = (preferredArchInfo){1, &type, &subtype};
-        expected_arch_component = "/arm64/";
+        // An arm64 executable on arm64e hardware still loads the host-preferred
+        // arm64e dylib slice. Keep the main executable on arm64, but trust the
+        // dependency slice dyld will actually map.
+        expected_arch_component = "/arm64e/";
     } else if (!strcmp(scenario, "arch-arm64e")) {
         subtype = CPU_SUBTYPE_ARM64E | CPU_SUBTYPE_ARM64E_ABI_V2;
         preferred = (preferredArchInfo){1, &type, &subtype};
@@ -124,7 +127,7 @@ int main(int argc, const char **argv)
     if (!strncmp(scenario, "arch-", 5)) {
         uint32_t main_subtype = !strcmp(scenario, "arch-arm64") ? CPU_SUBTYPE_ARM64_ALL :
                                 (CPU_SUBTYPE_ARM64E | CPU_SUBTYPE_ARM64E_ABI_V2);
-        uint32_t dep_subtype = !strcmp(scenario, "arch-arm64") ? CPU_SUBTYPE_ARM64_ALL : CPU_SUBTYPE_ARM64E;
+        uint32_t dep_subtype = CPU_SUBTYPE_ARM64E;
         Fat *main_fat = fat_init_from_path(argv[2]);
         NSString *dep_path = [[NSString stringWithUTF8String:argv[2]].stringByDeletingLastPathComponent stringByAppendingPathComponent:@"libdep.dylib"];
         Fat *dep_fat = fat_init_from_path(dep_path.fileSystemRepresentation);

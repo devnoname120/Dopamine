@@ -30,6 +30,9 @@ class LaunchdInjectionCompletionTests(unittest.TestCase):
         self.assertIn("cleanup:", arb)
         self.assertIn("resume_threads_except_for", arb[arb.index("cleanup:"):])
         self.assertNotIn("failed to wait for thread to finish: %s\\n\", mach_error_string(kr));\n\t\t\treturn kr;", arb)
+        restore = arb.index("thread_restore_state_arm64(targetThread, origThreadFullState)")
+        cleanup_free = arb.index("free(origThreadFullState);", restore)
+        self.assertIn("origThreadFullState = NULL;", arb[restore:cleanup_free])
 
     def test_app_owns_receiver_until_bounded_completion(self):
         app = (ROOT / "Application/Dopamine/Jailbreak/DOJailbreaker.m").read_text()

@@ -77,7 +77,11 @@ int jbserver_received_xpc_message(struct jbserver_impl *server, xpc_object_t xms
 			unsigned width = argDesc->type == JBS_TYPE_DATA ? 2 : 1;
 			if (width > 8 - slotCount) return jbserver_reply_error(xmsg, E2BIG);
 			slotCount += width;
-			if (!jbserver_argument_valid(argDesc, xpc_dictionary_get_value(xmsg, argDesc->name))) {
+			xpc_object_t argValue = NULL;
+			if (!argDesc->out && argDesc->type != JBS_TYPE_CALLER_TOKEN) {
+				argValue = xpc_dictionary_get_value(xmsg, argDesc->name);
+			}
+			if (!jbserver_argument_valid(argDesc, argValue)) {
 				return jbserver_reply_error(xmsg, EINVAL);
 			}
 		}

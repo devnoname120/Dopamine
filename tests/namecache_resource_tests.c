@@ -48,6 +48,7 @@ static uint64_t kread64(uint64_t address);
 static int kwrite32(uint64_t address, uint32_t value);
 static int kwrite64(uint64_t address, uint64_t value);
 static bool is_kcall_available(void) { return true; }
+static bool is_kcall_initialized(void) { return true; }
 static int kcall(uint64_t *result, uint64_t function, int argc, const uint64_t *arguments);
 static char *basename_r(const char *path, char *output)
 {
@@ -223,7 +224,7 @@ static int kcall(uint64_t *result, uint64_t function, int argc, const uint64_t *
         return 0;
     }
     if (function == (uint64_t)&symbol_vnode_rele_ext) {
-        if (argc != 4) return -1;
+        if (argc != 3) return -1;
         vnode_reles++;
         if (result) *result = 0;
         return 0;

@@ -91,6 +91,13 @@ static unsigned patch_count;
 static int patch_result;
 static bool local_symbols_missing;
 static bool exports_missing;
+static bool shadow_default_exports;
+static uint32_t *shadow_code;
+static unsigned default_dlsym_count;
+static unsigned explicit_dyld_open_count;
+static unsigned explicit_dyld_close_count;
+static char explicit_dyld_handle_storage;
+#define EXPLICIT_DYLD_HANDLE ((void *)&explicit_dyld_handle_storage)
 
 void *litehook_find_dsc_symbol(const char *image, const char *symbol)
 {
@@ -101,9 +108,27 @@ void *litehook_find_dsc_symbol(const char *image, const char *symbol)
 
 void *dispatch_test_dlsym(void *handle, const char *symbol)
 {
-    CHECK(handle == RTLD_DEFAULT);
     CHECK(!strcmp(symbol, "dlopen"));
+    if (handle == EXPLICIT_DYLD_HANDLE) return exports_missing ? NULL : runtime_code;
+    CHECK(handle == RTLD_DEFAULT);
+    default_dlsym_count++;
+    if (shadow_default_exports) return shadow_code;
     return exports_missing ? NULL : runtime_code;
+}
+
+void *dispatch_test_dlopen(const char *path, int mode)
+{
+    CHECK(!strcmp(path, "/usr/lib/system/libdyld.dylib"));
+    CHECK(mode & RTLD_FIRST);
+    explicit_dyld_open_count++;
+    return EXPLICIT_DYLD_HANDLE;
+}
+
+int dispatch_test_dlclose(void *handle)
+{
+    CHECK(handle == EXPLICIT_DYLD_HANDLE);
+    explicit_dyld_close_count++;
+    return 0;
 }
 
 kern_return_t litehook_hook_function(void *source, void *target)
@@ -124,6 +149,8 @@ static void runtime_patcher(bool fail)
     char *memory = mmap(NULL, page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     CHECK(memory != MAP_FAILED);
     runtime_code = (uint32_t *)memory;
+    shadow_code = runtime_code + 64;
+    shadow_code[0] = 0x14000000;
     memcpy(runtime_code, layouts[0].code, sizeof(layouts[0].code));
     void ***global = (void ***)(memory + 256);
     void **object = (void **)(memory + 512);
@@ -170,6 +197,13 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "exports-only")) {
         local_symbols_missing = true;
         runtime_patcher(false);
+    }
+    else if (!strcmp(argv[1], "shadowed-export")) {
+        shadow_default_exports = true;
+        runtime_patcher(false);
+        CHECK(default_dlsym_count == 0);
+        CHECK(explicit_dyld_open_count > 0);
+        CHECK(explicit_dyld_close_count == explicit_dyld_open_count);
     }
     else CHECK(false);
     return 0;

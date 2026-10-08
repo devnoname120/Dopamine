@@ -13,6 +13,7 @@
 #include "common.h"
 #include "log.h"
 #include "xpc_hook.h"
+#include "bootlog.h"
 
 NSDictionary* cachedJobInfo(pid_t pid, bool blacklised)
 {
@@ -177,7 +178,16 @@ int new_xpc_pipe_routine_reply(xpc_object_t reply)
 #define RB2_USERREBOOT (0x2000000000000000llu)
 void check_usreboot_msg(xpc_object_t xmsg)
 {
-	if (xpc_dictionary_get_uint64(xmsg, "flags") != RB2_USERREBOOT)
+	uint64_t rebootFlags = xpc_dictionary_get_uint64(xmsg, "flags");
+	if (rebootFlags == RB2_USERREBOOT) {
+		char phase[320];
+		snprintf(phase, sizeof(phase), "launchd: observed userreboot XPC type=%llu handle=%llu hasHandle=%d",
+			(unsigned long long)xpc_dictionary_get_uint64(xmsg, "type"),
+			(unsigned long long)xpc_dictionary_get_uint64(xmsg, "handle"),
+			xpc_dictionary_get_value(xmsg, "handle") != NULL);
+		roothide_bootlog(phase);
+	}
+	if (rebootFlags != RB2_USERREBOOT)
 	{
 		return;
 	}
@@ -205,9 +215,11 @@ void check_usreboot_msg(xpc_object_t xmsg)
 	if ((csflags & CS_PLATFORM_BINARY) == 0)
 	{
 		JBLogError("usereboot message not from platform process?");
+		roothide_bootlog("launchd: userreboot XPC rejected non-platform sender");
 		return;
 	}
 
+	roothide_bootlog("launchd: userreboot XPC accepted");
 	struct statfs fsb = {0};
 	if (statfs("/Developer", &fsb) != 0)
 	{

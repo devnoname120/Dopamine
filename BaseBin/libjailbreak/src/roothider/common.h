@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <xpc/xpc.h>
 
+#define ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV "ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK"
+
 extern bool launchdhookFirstLoad;
 
 /* as abort_with_* causes a SIGABRT, we need to use this instead */
@@ -11,6 +13,7 @@ void launchd_panic(const char* fmt, ...);
 int setBasebinDependency(bool present);
 
 bool dyld_patch_enabled();
+bool roothide_systemhook_dyld_fallback_enabled(void);
 bool process_force_dyld_patch(const char* path, const char** argv);
 int roothide_config_set_spinlock_fix(bool enabled);
 
@@ -18,6 +21,7 @@ int wait_for_exit(pid_t pid);
 
 bool proc_cantrace(pid_t pid);
 int proc_patch_dyld(pid_t pid);
+int proc_bootstrap_dyld(pid_t pid);
 int proc_fix_spinlock(pid_t pid);
 int proc_patch_csflags(pid_t pid);
 pid_t proc_get_ppid(pid_t pid);

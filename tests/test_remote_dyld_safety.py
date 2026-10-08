@@ -62,6 +62,72 @@ class RemoteDyldSafetyTests(unittest.TestCase):
         self.assertLess(publication, proc_patch.index("thread_set_state", publication))
         self.assertIn("restore_task_dyld_info_snapshot", proc_patch[publication:])
 
+    def test_finalization_probe_is_delayed_identity_checked_and_read_only(self):
+        source = (ROOT / "BaseBin/libjailbreak/src/roothider/dyld_patch.m").read_text()
+        self.assertIn("schedule_dyld_finalization_probe", source)
+        probe = function_source(
+            "BaseBin/libjailbreak/src/roothider/dyld_patch.m",
+            "schedule_dyld_finalization_probe",
+        )
+        self.assertIn("dispatch_after", probe)
+        self.assertIn("currentTask == expectedTask", probe)
+        self.assertIn("kreadbuf(flagsAddress", probe)
+        self.assertIn("kreadbuf(pairAddress", probe)
+        self.assertIn("TF_DYLD_ALL_IMAGE_FINAL", probe)
+        self.assertIn("/usr/libexec/logd", probe)
+        self.assertIn("/usr/libexec/runningboardd", probe)
+        self.assertIn("/usr/sbin/wifid", probe)
+        self.assertIn("/usr/libexec/configd", probe)
+        self.assertIn("probeClass", probe)
+        self.assertIn("const char *reentryRoute", probe)
+        self.assertIn("route=%s", probe)
+        self.assertNotIn("kwrite", probe)
+
+        proc_start = source.index("int proc_patch_dyld_internal(")
+        proc_end = source.index("\nint proc_patch_dyld(", proc_start)
+        proc_patch = source[proc_start:proc_end]
+        self.assertIn("dyldInfoSnapshot.hasFlags", proc_patch)
+        self.assertIn("roothide_systemhook_dyld_fallback_enabled()", proc_patch)
+        self.assertIn("schedule_dyld_finalization_probe", proc_patch)
+        self.assertIn('reentryRoute = "entry-trampoline";', proc_patch)
+        self.assertIn('reentryRoute = "thread-state";', proc_patch)
+        self.assertIn('getenv("ROOTHIDE_DYLD_FINALIZATION_TRACE")', proc_patch)
+
+    def test_reentry_route_is_logged_immediately_for_fail_and_control_targets(self):
+        source = (ROOT / "BaseBin/libjailbreak/src/roothider/dyld_patch.m").read_text()
+        route_log = function_source(
+            "BaseBin/libjailbreak/src/roothider/dyld_patch.m",
+            "log_dyld_reentry_route",
+        )
+        for path in (
+            "/usr/libexec/thermalmonitord",
+            "/System/Library/PrivateFrameworks/BackBoardServices.framework/backboardd",
+            "/System/Library/Frameworks/CoreTelephony.framework/Support/CommCenter",
+            "/usr/libexec/audiomxd",
+            "/usr/libexec/logd",
+            "/usr/libexec/runningboardd",
+            "/usr/sbin/wifid",
+            "/usr/libexec/configd",
+        ):
+            self.assertIn(path, route_log)
+        self.assertIn("watchdog-fail", route_log)
+        self.assertIn("watchdog-control", route_log)
+        self.assertIn("route=%s", route_log)
+        self.assertIn("threadflags=0x%08x", route_log)
+        self.assertNotIn("dispatch_after", route_log)
+        self.assertNotIn("kread", route_log)
+        self.assertNotIn("kwrite", route_log)
+
+        proc_start = source.index("int proc_patch_dyld_internal(")
+        proc_end = source.index("\nint proc_patch_dyld(", proc_start)
+        proc_patch = source[proc_start:proc_end]
+        self.assertIn("uint32_t reentryThreadFlags", proc_patch)
+        self.assertIn("reentryThreadFlags = threadState.__opaque_flags;", proc_patch)
+        route_log_call = proc_patch.index("log_dyld_reentry_route(")
+        success_check = proc_patch.index("if(!reentry)")
+        self.assertGreater(route_log_call, success_check)
+        self.assertLess(route_log_call, proc_patch.index("schedule_dyld_finalization_probe", success_check))
+
 
 if __name__ == "__main__":
     unittest.main()

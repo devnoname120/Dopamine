@@ -18,7 +18,7 @@ class Palera1nSpawnSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="palera1n-spawn-") as directory:
             executable = compile_fixture(
                 pathlib.Path(directory), implementation, "tests/palera1n_spawn_setup_tests.m",
-                ("-fblocks",),
+                ("-fblocks", "-fobjc-arc"),
             )
             for scenario in ("success", "collision", "attr-init", "persona", "actions-init", "pipe", "add-action", "spawn"):
                 with self.subTest(scenario=scenario):

@@ -11,6 +11,8 @@
 		<string>Sileo</string>
 		<key>Package</key>
 		<string>sileo.deb</string>
+		<key>Application</key>
+		<string>Sileo.app</string>
 	</dict>
 	<dict>
 		<key>Display Name</key>
@@ -21,6 +23,8 @@
 		<string>Zebra</string>
 		<key>Package</key>
 		<string>zebra.deb</string>
+		<key>Application</key>
+		<string>Zebra.app</string>
 	</dict>
 </array>
 </plist>

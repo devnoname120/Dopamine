@@ -109,7 +109,9 @@ NSString* resolveRpaths(NSString *subPath, NSString *mainExecutablePath, NSArray
 	{
 		Fat *fat = fat_init_from_path(loaderPath.fileSystemRepresentation);
 		if (fat) {
-				MachO *macho = fat_find_execution_slice(fat, executionArch);
+			MachO *macho = [loaderPath isEqualToString:mainExecutablePath]
+				? fat_find_execution_slice(fat, executionArch)
+				: fat_find_preferred_slice(fat);
 			if (macho) {
 				macho_enumerate_rpaths(macho, ^(const char *rpathCStr, bool *stop) {
 					NSString* possiblePath = [@(rpathCStr) stringByAppendingPathComponent:subPath];
@@ -295,7 +297,8 @@ static int recurse_handler(NSString *loadPath, NSString *loaderPath, NSString *m
 			}
 
 		MachO *macho = NULL;
-		if ([loadPath isEqualToString:mainExecutablePath]) {
+		bool isMainExecutable = [loadPath isEqualToString:mainExecutablePath];
+		if (isMainExecutable) {
 			if (preferredArch->Count > 0) {
 			for (size_t i = 0; i < preferredArch->Count; i++) {
 				if (preferredArch->Types[i] != 0 && preferredArch->Subtypes[i] != UINT32_MAX) {
@@ -304,8 +307,8 @@ static int recurse_handler(NSString *loadPath, NSString *loaderPath, NSString *m
 				}
 				}
 			}
+			if (!macho && executionArch->Valid) macho = fat_find_execution_slice(fat, executionArch);
 		}
-		if (!macho && executionArch->Valid) macho = fat_find_execution_slice(fat, executionArch);
 		if (!macho) {
 			macho = fat_find_preferred_slice(fat);
 				if (!macho) {
@@ -315,7 +318,7 @@ static int recurse_handler(NSString *loadPath, NSString *loaderPath, NSString *m
 					return -1;
 				}
 		}
-		if ([loadPath isEqualToString:mainExecutablePath]) {
+		if (isMainExecutable) {
 			executionArch->Valid = true;
 			executionArch->Type = macho->machHeader.cputype;
 			executionArch->Subtype = macho->machHeader.cpusubtype;

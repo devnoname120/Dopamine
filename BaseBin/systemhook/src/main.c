@@ -7,6 +7,7 @@
 #include <mach-o/dyld_images.h>
 #include <mach-o/getsect.h>
 #include <dlfcn.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <paths.h>
 #include <util.h>
@@ -16,6 +17,7 @@
 #include <libjailbreak/codesign.h>
 #include <libjailbreak/jbroot.h>
 #include <libjailbreak/hookd.h>
+#include <libjailbreak/roothider/bootlog.h>
 #include "../dyldhook/src/dyld_jbinfo.h"
 #include "common/hookd_external.h"
 #include <choma/CSBlob.h>
@@ -24,6 +26,75 @@
 #include "sandbox.h"
 #include "common/private.h"
 #include "common/inline.h"
+
+static bool systemhook_trace_comparison_target(void)
+{
+	static const char *comparisonNames[] = {
+		"backboardd", "audiomxd", "thermalmonitord", "CommCenter",
+		"logd", "runningboardd", "wifid", "configd", "Sileo",
+	};
+
+	const char *name = getprogname();
+	for (size_t i = 0; name && i < sizeof(comparisonNames) / sizeof(comparisonNames[0]); i++) {
+		if (!strcmp(name, comparisonNames[i])) return true;
+	}
+
+	char executablePath[PATH_MAX];
+	uint32_t bufsize = sizeof(executablePath);
+	if (_NSGetExecutablePath(executablePath, &bufsize) != 0) return false;
+
+	const char *basename = strrchr(executablePath, '/');
+	name = basename ? basename + 1 : executablePath;
+	for (size_t i = 0; i < sizeof(comparisonNames) / sizeof(comparisonNames[0]); i++) {
+		if (!strcmp(name, comparisonNames[i])) return true;
+	}
+	return false;
+}
+
+static bool systemhook_trace_enabled(void)
+{
+	const char *enabled = getenv("ROOTHIDE_SYSTEMHOOK_PHASE_TRACE");
+	if (enabled && enabled[0] == '1' && enabled[1] == '\0') return true;
+#if ROOTHIDE_SILEO_CONSTRUCTOR_TRACE
+	const char *name = getprogname();
+	if (name && strcmp(name, "Sileo") == 0) return true;
+#endif
+	return false;
+}
+
+static void systemhook_trace_phase(const char *phase)
+{
+	if (!systemhook_trace_enabled()) return;
+	if (!systemhook_trace_comparison_target()) return;
+	char message[320];
+	snprintf(message, sizeof(message), "systemhook phase pid=%d prog=%s %s",
+		getpid(), getprogname() ?: "(null)", phase);
+	roothide_bootlog(message);
+}
+
+static void systemhook_trace_result(const char *phase, long long result)
+{
+	if (!systemhook_trace_enabled()) return;
+	if (!systemhook_trace_comparison_target()) return;
+	char message[360];
+	snprintf(message, sizeof(message), "systemhook phase pid=%d prog=%s %s result=%lld",
+		getpid(), getprogname() ?: "(null)", phase, result);
+	roothide_bootlog(message);
+}
+
+static void systemhook_trace_dlsym(const char *name, void *handle)
+{
+	if (!systemhook_trace_enabled()) return;
+	if (!systemhook_trace_comparison_target()) return;
+	static unsigned traceCount;
+	unsigned call = __atomic_fetch_add(&traceCount, 1, __ATOMIC_RELAXED);
+	if (call >= 24) return;
+	char message[400];
+	snprintf(message, sizeof(message),
+		"systemhook dlsym pid=%d prog=%s call=%u handle=%p name=%.160s",
+		getpid(), getprogname() ?: "(null)", call, handle, name ?: "(null)");
+	roothide_bootlog(message);
+}
 
 bool gFullyDebugged = false;
 static void *gLibSandboxHandle;
@@ -79,8 +150,12 @@ int consume_tokenized_sandbox_extensions(char *sandboxExtensions)
 void *(*sandbox_apply_orig)(void *) = NULL;
 void *sandbox_apply_hook(void *a1)
 {
+	systemhook_trace_phase("sandbox-apply-enter");
 	void *r = sandbox_apply_orig(a1);
-	if (consume_tokenized_sandbox_extensions(JB_SandboxExtensions) != 0) {
+	systemhook_trace_phase("sandbox-apply-original-returned");
+	int extensionResult = consume_tokenized_sandbox_extensions(JB_SandboxExtensions);
+	systemhook_trace_result("sandbox-apply-extensions-returned", extensionResult);
+	if (extensionResult != 0) {
 		SYSLOG("Failed to reacquire sandbox extensions after sandbox_apply");
 	}
 	return r;
@@ -123,6 +198,7 @@ int dyld_hook_routine(void **dyld, int idx, void *hook, void **orig, uint16_t pa
 void *(*dyld_dlsym_orig)(void *dyld, void *handle, const char *name);
 void *dyld_dlsym_hook(void *dyld, void *handle, const char *name)
 {
+	systemhook_trace_dlsym(name, handle);
 	if (handle == gLibSandboxHandle && !strcmp(name, "sandbox_apply")) {
 		// We abuse the fact that libsystem_sandbox will call dlsym to get the sandbox_apply pointer here
 		// Because we can just return a different pointer, we avoid doing instruction replacements
@@ -429,14 +505,17 @@ static int systemhook_checkin(void)
 
 __attribute__((constructor)) static void initializer(void)
 {
+	systemhook_trace_phase("initializer-begin");
 	roothide_init();
+	systemhook_trace_phase("roothide-init-returned");
 	// Under normal circumstances, dyldhook will have already handled the check-in, so get the check-in information from the __jbinfo section
 	// For more information on the check-in process, check the comments in dyldhook
 	if (parse_dyldhook_jbinfo(&JB_RootPath, &JB_BootUUID, &JB_SandboxExtensions, &gFullyDebugged) != 0) {
 		// If under any circumstances dyldhook has *not* performed a check-in, do it now
 		// This code path is taken inside xpcproxy on iOS 16, because launchd apparently no longer passes it a bootstrap port
 			if (systemhook_checkin() == 0) {
-				if (consume_tokenized_sandbox_extensions(JB_SandboxExtensions) != 0) return;
+				int sandboxExtensionResult = consume_tokenized_sandbox_extensions(JB_SandboxExtensions);
+				if (sandboxExtensionResult != 0) return;
 		}
 		else {
 			// If neither dyldhook nor systemhook managed to perform the check-in, something is very wrong and the best thing we can do is bail out
@@ -444,6 +523,8 @@ __attribute__((constructor)) static void initializer(void)
 			return;
 		}
 	}
+
+	systemhook_trace_phase("checkin-resolved");
 
 	// Unset DYLD_INSERT_LIBRARIES, but only if systemhook itself is the only thing contained in it
 	// Feeable attempt at making jailbreak detection harder
@@ -454,7 +535,10 @@ __attribute__((constructor)) static void initializer(void)
 		}
 	}
 
-	// On iOS 26+, hooks have to be applied through hookd
+	// On iOS 26+, hooks have to be applied through hookd. External Frida
+	// compatibility is optional; core process hooks and fork safety are not.
+	systemhook_trace_phase("pre-hookd-policy");
+	bool needsHookdExternalSupport = false;
 	if (__builtin_available(iOS 19.0, *)) {
 
 		// If available, use jbclient_mach_hookd_send_msg inside dyld instead...
@@ -466,22 +550,64 @@ __attribute__((constructor)) static void initializer(void)
 		// - Implement inline mach_msg* syscalls into systemhook
 		// - Refactor all logic involving hookd into it's own library and implement the inline syscalls there
 		// But for now this works, the only problem could be something trying to hook a page in dyld itself....
+		systemhook_trace_phase("pre-dyld-hookd-symbol");
 		void *dyld_jbclient_mach_hookd_send_msg = systemhook_find_image_symbol(get_dyld_mach_header(), "_jbclient_mach_hookd_send_msg");
+		systemhook_trace_phase("post-dyld-hookd-symbol");
 		if (dyld_jbclient_mach_hookd_send_msg) {
 			hookd_send_msg = dyld_jbclient_mach_hookd_send_msg;
 		}
 
-		if (process_requires_hookd()) {
+		systemhook_trace_phase("pre-process-requires-hookd");
+		bool requiresHookd = process_requires_hookd();
+		systemhook_trace_result("post-process-requires-hookd", requiresHookd);
+		if (requiresHookd) {
 			litehook_hook_memory = litehook_hook_memory_hookd;
-			litehook_hook_function(mach_vm_protect, mach_vm_protect_fixed);
-				if (init_hookd_external_support() != 0) return;
+			systemhook_trace_phase("pre-hook-mach-vm-protect");
+			kern_return_t protectHookResult = litehook_hook_function(mach_vm_protect, mach_vm_protect_fixed);
+			systemhook_trace_result("post-hook-mach-vm-protect", protectHookResult);
+			needsHookdExternalSupport = true;
+		}
+	}
+
+#ifdef __arm64e__
+	// systemhook modifies executable pages, so fork protection is required before
+	// any optional setup is allowed to fail or return early. On iOS 26, per-process
+	// external Frida support can fail even though ordinary fork still needs repair.
+	int forkSandboxResult = sandbox_check(getpid(), "process-fork", SANDBOX_CHECK_NO_REPORT, NULL);
+	systemhook_trace_result("process-fork-sandbox-check", forkSandboxResult);
+	if (forkSandboxResult == 0) {
+		const char *forkfixPath = JBROOT_PATH("/basebin/forkfix.dylib");
+		dlerror();
+		systemhook_trace_phase("pre-forkfix-dlopen");
+		void *forkfixHandle = dlopen(forkfixPath, RTLD_NOW);
+		systemhook_trace_result("post-forkfix-dlopen", forkfixHandle != NULL);
+		if (!forkfixHandle) {
+			const char *forkfixError = dlerror();
+			char phase[512];
+			snprintf(phase, sizeof(phase), "systemhook: forkfix dlopen failed path=%s errno=%d error=%s",
+				forkfixPath, errno, forkfixError ?: "none");
+			roothide_bootlog(phase);
+		}
+	}
+#endif
+
+	if (needsHookdExternalSupport) {
+		systemhook_trace_phase("pre-hookd-external-support");
+		int externalSupportResult = init_hookd_external_support();
+		systemhook_trace_result("post-hookd-external-support", externalSupportResult);
+		if (externalSupportResult != 0) {
+			SYSLOG("Optional external hookd support unavailable: %d", externalSupportResult);
 		}
 	}
 
 	// Apply posix_spawn / execve hooks
 	if (__builtin_available(iOS 16.0, *)) {
-		litehook_hook_function(__posix_spawn, __posix_spawn_hook);
-		litehook_hook_function(__execve,      __execve_hook);
+		systemhook_trace_phase("pre-hook-posix-spawn");
+		kern_return_t spawnHookResult = litehook_hook_function(__posix_spawn, __posix_spawn_hook);
+		systemhook_trace_result("post-hook-posix-spawn", spawnHookResult);
+		systemhook_trace_phase("pre-hook-execve");
+		kern_return_t execHookResult = litehook_hook_function(__execve, __execve_hook);
+		systemhook_trace_result("post-hook-execve", execHookResult);
 	}
 	else {
 		// On iOS 15 there is a way to hook posix_spawn and execve without doing instruction replacements
@@ -498,33 +624,42 @@ __attribute__((constructor)) static void initializer(void)
 	// This makes it so that library validation is also bypassed if someone calls fcntl in userspace to attach a signature manually
 	void *dyld___fcntl = systemhook_find_image_symbol(get_dyld_mach_header(), "___fcntl");
 	extern int __fcntl(int fd, int op, ... /* arg */ );
-	if (dyld___fcntl) litehook_hook_function(__fcntl, dyld___fcntl);
+	if (dyld___fcntl) {
+		systemhook_trace_phase("pre-hook-fcntl");
+		kern_return_t fcntlHookResult = litehook_hook_function(__fcntl, dyld___fcntl);
+		systemhook_trace_result("post-hook-fcntl", fcntlHookResult);
+	}
 
 		// Initialize stuff neccessary for sandbox_apply hook
+		systemhook_trace_phase("pre-libsandbox-dlopen");
 		gLibSandboxHandle = dlopen("/usr/lib/libsandbox.1.dylib", RTLD_FIRST | RTLD_LOCAL | RTLD_LAZY);
+		systemhook_trace_result("post-libsandbox-dlopen", gLibSandboxHandle != NULL);
 		if (!gLibSandboxHandle) return;
+		systemhook_trace_phase("pre-sandbox-apply-dlsym");
 		sandbox_apply_orig = dlsym(gLibSandboxHandle, "sandbox_apply");
+		systemhook_trace_result("post-sandbox-apply-dlsym", sandbox_apply_orig != NULL);
 		if (!sandbox_apply_orig) return;
 
 		// Apply dyld hooks
-		if (init_dlsym_hook() != 0) return;
+		systemhook_trace_phase("pre-init-dlsym-hook");
+		int dlsymHookResult = init_dlsym_hook();
+		systemhook_trace_result("post-init-dlsym-hook", dlsymHookResult);
+		if (dlsymHookResult != 0) return;
 
 
 /*************************** roothide *************************/
 /* after unsandboxing jbroot and applying library-trust-hook */
+systemhook_trace_phase("pre-roothide-init-checkin");
 roothide_init_with_checkin(JB_RootPath); // will hook dlopen* if necessary
+systemhook_trace_phase("post-roothide-init-checkin");
 /*************************** roothide ************************/
 
 
-#ifdef __arm64e__
-	// Since pages have been modified in this process, we need to load forkfix to ensure forking will work
-	// Optimization: If the process cannot fork at all due to sandbox, we don't need to do anything
-	if (sandbox_check(getpid(), "process-fork", SANDBOX_CHECK_NO_REPORT, NULL) == 0) {
-		dlopen(JBROOT_PATH("/basebin/forkfix.dylib"), RTLD_NOW);
-	}
-#endif
 
-	if (load_executable_path() == 0) {
+	systemhook_trace_phase("pre-load-executable-path");
+	int executablePathResult = load_executable_path();
+	systemhook_trace_result("post-load-executable-path", executablePathResult);
+	if (executablePathResult == 0) {
 		// Load rootlesshooks / watchdoghook when neccessary
 		if (!strcmp(gExecutablePath, "/usr/sbin/cfprefsd") ||
 			!strcmp(gExecutablePath, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") ||
@@ -561,13 +696,18 @@ roothide_init_with_checkin(JB_RootPath); // will hook dlopen* if necessary
 
 
 /******************* roothide *****************/
+systemhook_trace_phase("pre-roothide-init-executable");
 roothide_init_with_executable(gExecutablePath);
+systemhook_trace_phase("post-roothide-init-executable");
 /******************* roothide ****************/
 
 
 		// Load tweaks if desired
 		// We can hardcode /var/jb here since if it doesn't exist, loading TweakLoader.dylib is not going to work anyways
-		if (should_enable_tweaks()) {
+		systemhook_trace_phase("pre-should-enable-tweaks");
+		bool enableTweaks = should_enable_tweaks();
+		systemhook_trace_result("post-should-enable-tweaks", enableTweaks);
+		if (enableTweaks) {
 			const char *tweakLoaderPath = JBROOT_PATH("/usr/lib/TweakLoader.dylib");
 			if (access(tweakLoaderPath, F_OK) == 0) {
 				void *tweakLoaderHandle = dlopen(tweakLoaderPath, RTLD_NOW);
@@ -582,4 +722,5 @@ roothide_init_with_executable(gExecutablePath);
 		jbclient_cs_revalidate();
 #endif
 	}
+	systemhook_trace_phase("initializer-complete");
 }

@@ -6,6 +6,20 @@ from port_review_test_support import compile_fixture, function_source, run_fixtu
 
 
 class SandboxCapabilityTests(unittest.TestCase):
+    def test_watchdog_trace_brackets_sandbox_reacquire(self):
+        implementation = function_source(
+            "BaseBin/systemhook/src/main.c",
+            "sandbox_apply_hook",
+        )
+        phases = (
+            'systemhook_trace_phase("sandbox-apply-enter")',
+            'systemhook_trace_phase("sandbox-apply-original-returned")',
+            'systemhook_trace_result("sandbox-apply-extensions-returned"',
+        )
+        positions = [implementation.find(phase) for phase in phases]
+        self.assertTrue(all(position >= 0 for position in positions), implementation)
+        self.assertEqual(positions, sorted(positions))
+
     def test_dyld_and_systemhook_require_complete_consumption(self):
         for path in ("BaseBin/dyldhook/src/main.c", "BaseBin/systemhook/src/main.c"):
             with self.subTest(path=path):

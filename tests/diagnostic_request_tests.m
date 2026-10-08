@@ -34,6 +34,7 @@ static uid_t fixture_token_uid(audit_token_t token) { return fixture_uid; }
 static pid_t fixture_token_pid(audit_token_t token) { return 42; }
 static void jailbreakd_reply_message(int message_id, xpc_object_t reply) { observed_reply = reply; }
 static void fixture_debug(const char *format, ...) {}
+static void roothide_bootlog(const char *line) { (void)line; }
 static void fixture_abort(void) { aborts++; }
 static int fixture_kill(pid_t pid, int signal_number) { operations++; return 0; }
 static const char *proc_get_path(pid_t pid, char *path) { return "/fixture/daemon"; }

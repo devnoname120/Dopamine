@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 #include <spawn.h>
+#include <unistd.h>
 #include <litehook.h>
 #include <sys/sysctl.h>
 
@@ -14,6 +15,8 @@
 #include "../systemhook/src/common/envbuf.h"
 
 const char* HOOK_DYLIB_PATH = NULL;
+const char* HOOK_DYLIB_SEARCH_PATH = NULL;
+bool HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY = false;
 
 #define POSIX_SPAWN_PROC_TYPE_DRIVER 0x700
 extern int posix_spawnattr_getprocesstype_np(const posix_spawnattr_t *__restrict, int *__restrict) __API_AVAILABLE(macos(10.8), ios(6.0));
@@ -103,13 +106,12 @@ void roothide_launchd_postinit(bool firstLoad)
 	roothide_bootlog(firstLoad ? "launchd: first roothide initialization" : "launchd: reboot roothide initialization");
 	JBLogDebug("roothide_launchd_postinit: firstLoad=%d", firstLoad);
 
-	launchdhookFirstLoad = firstLoad;
-
 	exec_set_patch(true);
 
 	if(firstLoad)
 	{
 		HOOK_DYLIB_PATH = "";
+		HOOK_DYLIB_SEARCH_PATH = NULL;
 		
 		if (__builtin_available(iOS 16.0, *))
 		{
@@ -135,13 +137,40 @@ void roothide_launchd_postinit(bool firstLoad)
 			[NSFileManager.defaultManager removeItemAtPath:systemhookFilePath error:nil];
 			assert([NSFileManager.defaultManager moveItemAtPath:JBROOT_PATH(@"/basebin/systemhook.dylib") toPath:systemhookFilePath error:nil]);
 		}
-		
-		roothide_bootlog("launchd: publishing systemhook namecache entry");
-		assert(unsandbox("/usr/lib", systemhookFilePath.fileSystemRepresentation) == 0);
-		roothide_bootlog("launchd: systemhook namecache entry published");
 
-		//new "real path"
-		asprintf(&HOOK_DYLIB_PATH, "/usr/lib/systemhook-%016llX.dylib", jbinfo(jbrand));
+		if (is_kcall_initialized()) {
+			HOOK_DYLIB_SEARCH_PATH = NULL;
+			unsetenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV);
+			roothide_bootlog("launchd: publishing systemhook namecache entry");
+			errno = 0;
+			int unsandboxResult = unsandbox("/usr/lib", systemhookFilePath.fileSystemRepresentation);
+			if (unsandboxResult != 0) {
+				char phase[256];
+				snprintf(phase, sizeof(phase), "launchd: systemhook namecache publish failed result=%d errno=%d path=%s",
+					unsandboxResult, errno, systemhookFilePath.fileSystemRepresentation);
+				roothide_bootlog(phase);
+			}
+			assert(unsandboxResult == 0);
+			roothide_bootlog("launchd: systemhook namecache entry published");
+			asprintf(&HOOK_DYLIB_PATH, "/usr/lib/systemhook-%016llX.dylib", jbinfo(jbrand));
+		}
+		else {
+			// SPTM arm64e targets do not provide a local kcall primitive. Mutating the
+			// namecache without XNU's lock/refcount helpers is unsafe. Preserve the
+			// historical /usr/lib logical insert identity without touching namecache:
+			// dyld searches a private directory containing only this randomized hook.
+			NSString *systemhookSearchDir = [JBROOT_PATH(@"/basebin") stringByAppendingPathComponent:@".systemhook-search"];
+			[NSFileManager.defaultManager removeItemAtPath:systemhookSearchDir error:nil];
+			assert([NSFileManager.defaultManager createDirectoryAtPath:systemhookSearchDir
+				withIntermediateDirectories:YES attributes:nil error:nil]);
+			NSString *searchHookPath = [systemhookSearchDir stringByAppendingPathComponent:systemhookFilePath.lastPathComponent];
+			assert(link(systemhookFilePath.fileSystemRepresentation, searchHookPath.fileSystemRepresentation) == 0);
+
+			setenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV, "1", 1);
+			asprintf(&HOOK_DYLIB_PATH, "/usr/lib/systemhook-%016llX.dylib", jbinfo(jbrand));
+			HOOK_DYLIB_SEARCH_PATH = strdup(systemhookSearchDir.fileSystemRepresentation);
+			roothide_bootlog("launchd: systemhook using /usr/lib logical path via private dyld search");
+		}
 	}
 
 	if (__builtin_available(iOS 16.0, *))
@@ -225,6 +254,14 @@ int roothide_launchd_trust_executable(const char* path)
 
 int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict])
 {
+	const char *xpcProxyTraceEnabled = getenv("ROOTHIDE_XPCPROXY_TRACE");
+	bool traceXpcProxy = path && strcmp(path, "/usr/libexec/xpcproxy") == 0 &&
+		xpcProxyTraceEnabled && strcmp(xpcProxyTraceEnabled, "1") == 0;
+	char traceService[160] = "(none)";
+	if (traceXpcProxy && argv && argv[1]) {
+		strlcpy(traceService, argv[1], sizeof(traceService));
+		for (char *c = traceService; *c; c++) if (*c == '\n' || *c == '\r') *c = ' ';
+	}
 	//spawn_prehook ensure this is always available
 	posix_spawnattr_t attrp = &desc->attrp;
 
@@ -236,6 +273,12 @@ int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *re
 
 	bool should_suspend = (proctype != POSIX_SPAWN_PROC_TYPE_DRIVER);
 	bool should_resume = should_suspend && (flags & POSIX_SPAWN_START_SUSPENDED)==0;
+	if (traceXpcProxy) {
+		char phase[320];
+		snprintf(phase, sizeof(phase), "launchd: xpcproxy spawn begin service=%s flags=0x%x suspend=%d resume=%d",
+			traceService, (unsigned int)(unsigned short)flags, should_suspend, should_resume);
+		roothide_bootlog(phase);
+	}
 
 	if (should_suspend) {
 		posix_spawnattr_setflags(attrp, flags | POSIX_SPAWN_START_SUSPENDED);
@@ -246,6 +289,14 @@ int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *re
 	char **envc = envbuf_mutcopy((const char **)envp);
 	if(envbuf_getenv(envc, "DYLD_INSERT_LIBRARIES")) {
 		envbuf_setenv(&envc, "DYLD_IN_CACHE", "0");
+	}
+	if (traceXpcProxy) {
+		const char *insertLibraries = envbuf_getenv((const char **)envc, "DYLD_INSERT_LIBRARIES");
+		char phase[640];
+		snprintf(phase, sizeof(phase),
+			"launchd: xpcproxy environment service=%s insert=%s hook=%s",
+			traceService, insertLibraries ?: "(null)", HOOK_DYLIB_PATH ?: "(null)");
+		roothide_bootlog(phase);
 	}
 
 #ifdef __arm64e__
@@ -261,6 +312,11 @@ int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *re
 	if (!pidp) pidp = &pidval;
 	int ret = __posix_spawn_orig_wrapper(pidp, path, desc, argv, envc);
 	pid_t pid = *pidp;
+	if (traceXpcProxy) {
+		char phase[320];
+		snprintf(phase, sizeof(phase), "launchd: xpcproxy spawn returned service=%s ret=%d pid=%d", traceService, ret, pid);
+		roothide_bootlog(phase);
+	}
 
 	envbuf_free(envc);
 	
@@ -268,7 +324,18 @@ int roothide_launchd___posix_spawn_posthook(pid_t *restrict pidp, const char *re
 
 	if (ret == 0 && pid > 0) {
 		if(should_suspend) {
-			if(jbdSpawnPatchChild(pid, should_resume) != 0) {
+			if (traceXpcProxy) {
+				char phase[320];
+				snprintf(phase, sizeof(phase), "launchd: xpcproxy patch request service=%s pid=%d resume=%d", traceService, pid, should_resume);
+				roothide_bootlog(phase);
+			}
+			int patchResult = jbdSpawnPatchChild(pid, should_resume);
+			if (traceXpcProxy) {
+				char phase[320];
+				snprintf(phase, sizeof(phase), "launchd: xpcproxy patch returned service=%s pid=%d result=%d", traceService, pid, patchResult);
+				roothide_bootlog(phase);
+			}
+			if(patchResult != 0) {
 				JBLogError("Failed to patch spawned process (%d) %s", pid, path);
 				//just kill it instead of letting it hang forever so that launchd can respawn it later
 				kill(pid, SIGQUIT); //core dump
@@ -352,6 +419,10 @@ int roothide_launchd___posix_spawn_prehook(pid_t *restrict pidp, const char *res
 	if(strcmp(path, "/sbin/launchd") == 0) {
 		short flags = 0;
 		posix_spawnattr_getflags(attrp, &flags);
+		char phase[320];
+		snprintf(phase, sizeof(phase), "launchd: prehook routing self-spawn path=%s firstLoad=%d flags=0x%x",
+			path, launchdhookFirstLoad, (unsigned int)(unsigned short)flags);
+		roothide_bootlog(phase);
 		posix_spawnattr_setflags(attrp, flags | POSIX_SPAWN_START_SUSPENDED);
 		return __posix_spawn_hook(pidp, path, desc, argv, envp);
 	}
@@ -456,6 +527,12 @@ int roothide_launchd___posix_spawn_prehook(pid_t *restrict pidp, const char *res
 
 	if(launchdhookFirstLoad) 
 	{
+		if ((path && strstr(path, "launchd")) || (argv && argv[0] && strstr(argv[0], "launchd"))) {
+			char phase[384];
+			snprintf(phase, sizeof(phase), "launchd: first-load bypass launchd-like spawn path=%s argv0=%s",
+				path ?: "(null)", (argv && argv[0]) ? argv[0] : "(null)");
+			roothide_bootlog(phase);
+		}
 		//we should not enable system-wide injection until the jailbreak is finalized (userspace reboot).
 		return __posix_spawn_orig_wrapper(pidp, path, desc, argv, envp);
 	}

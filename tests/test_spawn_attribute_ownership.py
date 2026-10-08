@@ -12,10 +12,21 @@ class SpawnAttributeOwnershipTests(unittest.TestCase):
         source = (ROOT / path).read_text()
         header = (ROOT / "BaseBin/systemhook/src/common/common.h").read_text()
         enum = re.search(r"typedef enum\s*\{.*?\} kSpawnConfig;", header, re.DOTALL).group(0)
-        names = ["spawn_exec_hook_common", "posix_spawn_hook_shared", "execve_hook_shared"]
+        names = [
+            "colon_list_contains_component",
+            "colon_list_prepend_component",
+            "colon_list_remove_component",
+            "hook_dylib_backing_path",
+            "spawn_exec_hook_common",
+            "posix_spawn_hook_shared",
+            "execve_hook_shared",
+        ]
         if "static int copy_spawn_attributes(" in source:
-            names.insert(0, "copy_spawn_attributes")
-        implementation = enum + "\n" + "\n".join(function_source(path, name) for name in names)
+            names.insert(3, "copy_spawn_attributes")
+        implementation = enum + '\nstatic const char *HOOK_DYLIB_SEARCH_PATH = NULL;\n'
+        implementation += 'static bool HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY = false;\n'
+        implementation += 'static bool path_is_within_jbroot(const char *path) { (void)path; return false; }\n'
+        implementation += "\n".join(function_source(path, name) for name in names)
         implementation = implementation.replace("__builtin_available(iOS 17.6, *)", "fixtureModern")
         scenarios = (
             "reused", "interleaved", "spawn-failure", "persona-failure", "resume-failure",

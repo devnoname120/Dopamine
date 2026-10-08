@@ -94,19 +94,32 @@ int spawnExecPatchAdd(int pid, bool resume)
 {
     initExecPatch();
 
+    // The watched process cannot execute the SETEXEC transition until this RPC
+    // returns. Publish the bookkeeping record synchronously first so the NOTE_EXEC
+    // event can never outrun its PID -> resume state after the caller continues.
+    __block bool duplicate = false;
+    dispatch_sync(gExecPatchDataQueue, ^{
+        if([gExecPatchArray objectForKey:@(pid)] != nil) {
+            JBLogError("[spawnExecPatchAdd] already has record for process: %d", pid);
+            duplicate = true;
+        } else {
+            [gExecPatchArray setObject:@(resume) forKey:@(pid)];
+        }
+    });
+    if (duplicate) return -1;
+
     struct kevent kev;
     EV_SET(&kev, pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_ONESHOT, NOTE_EXEC|NOTE_EXIT, 0, NULL);
     if (kevent(kq, &kev, 1, NULL, 0, NULL) == -1) {
+        int savedErrno = errno;
         JBLogError("add kevent failed for pid: %d", pid);
+        dispatch_sync(gExecPatchDataQueue, ^{
+            [gExecPatchArray removeObjectForKey:@(pid)];
+        });
+        errno = savedErrno;
         return -1;
     }
 
-    dispatch_async(gExecPatchDataQueue, ^{
-        if([gExecPatchArray objectForKey:@(pid)] != nil) {
-            JBLogError("[spawnExecPatchAdd] already has record for process: %d", pid);
-        }
-        [gExecPatchArray setObject:@(resume) forKey:@(pid)];
-    });
     return 0;
 }
 

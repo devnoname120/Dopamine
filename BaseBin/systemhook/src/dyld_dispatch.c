@@ -56,7 +56,12 @@ int dyld_hook_dispatch(void ***interface, const char *symbol, unsigned arguments
 {
     if (!interface || !*interface || !symbol || symbol[0] != '_' || !symbol[1] || !hook || !original) return KERN_INVALID_ARGUMENT;
     // Public stubs need not appear in the shared cache's private local-symbols table.
-    void *entry = dlsym(RTLD_DEFAULT, symbol + 1);
+    // Resolve them from libdyld itself so an interposing library cannot shadow the
+    // public entry point with a wrapper whose instruction layout is unrelated.
+    void *dyldHandle = dlopen("/usr/lib/system/libdyld.dylib", RTLD_LAZY | RTLD_LOCAL | RTLD_FIRST);
+    if (!dyldHandle) return KERN_INVALID_ADDRESS;
+    void *entry = dlsym(dyldHandle, symbol + 1);
+    dlclose(dyldHandle);
     if (!entry) return KERN_INVALID_ADDRESS;
     const uint32_t *instructions = ptrauth_strip(entry, ptrauth_key_function_pointer);
 

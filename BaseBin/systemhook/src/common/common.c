@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <stddef.h>
 #include <dlfcn.h>
+#include <stdlib.h>
 #include "envbuf.h"
 #include "private.h"
 #include <libjailbreak/jbclient_xpc.h>
@@ -55,6 +56,63 @@ bool string_has_suffix(const char* str, const char* suffix)
 	}
 
 	return !strcmp(str + str_len - suffix_len, suffix);
+}
+
+static bool colon_list_contains_component(const char *list, const char *component)
+{
+	if (!list || !component || !component[0]) return false;
+	size_t componentLength = strlen(component);
+	const char *cursor = list;
+	while (*cursor) {
+		const char *end = strchr(cursor, ':');
+		size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
+		if (length == componentLength && strncmp(cursor, component, length) == 0) return true;
+		if (!end) break;
+		cursor = end + 1;
+	}
+	return false;
+}
+
+static char *colon_list_prepend_component(const char *list, const char *component)
+{
+	if (!component || !component[0]) return list ? strdup(list) : NULL;
+	size_t componentLength = strlen(component);
+	size_t listLength = list ? strlen(list) : 0;
+	char *result = malloc(componentLength + (listLength ? listLength + 1 : 0) + 1);
+	if (!result) return NULL;
+	memcpy(result, component, componentLength);
+	if (listLength) {
+		result[componentLength] = ':';
+		memcpy(result + componentLength + 1, list, listLength);
+		result[componentLength + 1 + listLength] = '\0';
+	}
+	else {
+		result[componentLength] = '\0';
+	}
+	return result;
+}
+
+static char *colon_list_remove_component(const char *list, const char *component)
+{
+	if (!list) return NULL;
+	if (!component || !component[0]) return strdup(list);
+	char *result = calloc(1, strlen(list) + 1);
+	if (!result) return NULL;
+	bool first = true;
+	size_t componentLength = strlen(component);
+	const char *cursor = list;
+	while (*cursor) {
+		const char *end = strchr(cursor, ':');
+		size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
+		if (!(length == componentLength && strncmp(cursor, component, length) == 0)) {
+			if (!first) strcat(result, ":");
+			strncat(result, cursor, length);
+			first = false;
+		}
+		if (!end) break;
+		cursor = end + 1;
+	}
+	return result;
 }
 
 void string_enumerate_components(const char *string, const char *separator, void (^enumBlock)(const char *pathString, bool *stop))
@@ -226,7 +284,7 @@ kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[rest
 // 4. Fix spawning as root via persona entitlement on iOS 17.6+
 
 static int copy_spawn_attributes(const struct _posix_spawn_args_desc *source, struct _posix_spawn_args_desc *copy,
-								void **ownedAttributes, void **ownedPersona)
+									void **ownedAttributes, void **ownedPersona)
 {
 	*ownedAttributes = NULL;
 	*ownedPersona = NULL;
@@ -266,6 +324,36 @@ static int copy_spawn_attributes(const struct _posix_spawn_args_desc *source, st
 	return 0;
 }
 
+static bool hook_dylib_backing_path(char pathOut[PATH_MAX])
+{
+	if (!HOOK_DYLIB_PATH || !HOOK_DYLIB_PATH[0] || !pathOut) return false;
+	if (access(HOOK_DYLIB_PATH, F_OK) == 0) {
+		strlcpy(pathOut, HOOK_DYLIB_PATH, PATH_MAX);
+		return true;
+	}
+	if (!HOOK_DYLIB_SEARCH_PATH || !HOOK_DYLIB_SEARCH_PATH[0]) return false;
+	const char *leaf = strrchr(HOOK_DYLIB_PATH, '/');
+	leaf = leaf ? leaf + 1 : HOOK_DYLIB_PATH;
+	if (snprintf(pathOut, PATH_MAX, "%s/%s", HOOK_DYLIB_SEARCH_PATH, leaf) <= 0) return false;
+	return access(pathOut, F_OK) == 0;
+}
+
+static bool path_is_within_jbroot(const char *path)
+{
+	if (!path || !path[0]) return false;
+	const char *jbroot = get_jbroot();
+	if (!jbroot || !jbroot[0]) return false;
+
+	char resolvedPath[PATH_MAX];
+	char resolvedRoot[PATH_MAX];
+	if (!realpath(path, resolvedPath) || !realpath(jbroot, resolvedRoot)) return false;
+
+	size_t rootLength = strlen(resolvedRoot);
+	while (rootLength > 1 && resolvedRoot[rootLength - 1] == '/') rootLength--;
+	if (strncmp(resolvedPath, resolvedRoot, rootLength) != 0) return false;
+	return resolvedPath[rootLength] == '\0' || resolvedPath[rootLength] == '/';
+}
+
 static int spawn_exec_hook_common(bool isExec,
 						   const char *path,
 						   char *const argv[restrict],
@@ -302,29 +390,35 @@ static int spawn_exec_hook_common(bool isExec,
 		trust_binary(path);
 	}
 
-	const char *existingLibraryInserts = envbuf_getenv((const char **)envp, "DYLD_INSERT_LIBRARIES");
-	__block bool systemHookAlreadyInserted = false;
-	if (existingLibraryInserts) {
-		string_enumerate_components(existingLibraryInserts, ":", ^(const char *existingLibraryInsert, bool *stop) {
-			if (!strcmp(existingLibraryInsert, HOOK_DYLIB_PATH)) {
-				systemHookAlreadyInserted = true;
-			}
-		});
-	}
+		const char *existingLibraryInserts = envbuf_getenv((const char **)envp, "DYLD_INSERT_LIBRARIES");
+		__block bool systemHookAlreadyInserted = false;
+		if (existingLibraryInserts) {
+			string_enumerate_components(existingLibraryInserts, ":", ^(const char *existingLibraryInsert, bool *stop) {
+				if (!strcmp(existingLibraryInsert, HOOK_DYLIB_PATH)) {
+					systemHookAlreadyInserted = true;
+				}
+			});
+		}
+		const char *existingLibrarySearchPath = envbuf_getenv((const char **)envp, "DYLD_LIBRARY_PATH");
+		bool hookSearchAlreadyInserted = HOOK_DYLIB_SEARCH_PATH &&
+			colon_list_contains_component(existingLibrarySearchPath, HOOK_DYLIB_SEARCH_PATH);
 
-	int JBEnvAlreadyInsertedCount = (int)systemHookAlreadyInserted;
+		int JBEnvAlreadyInsertedCount = (int)systemHookAlreadyInserted;
 
 	// Check if we can find at least one reason to not insert jailbreak related environment variables
 	// In this case we also need to remove pre existing environment variables if they are already set
-	bool shouldInsertJBEnv = true;
-	bool hasSafeModeVariable = false;
-	do {
-		if (!(spawnConfig & kSpawnConfigInject)) {
-			shouldInsertJBEnv = false;
-			break;
-		}
-
-		// Check if we can find a _SafeMode or _MSSafeMode variable
+		bool shouldInsertJBEnv = true;
+		bool hasSafeModeVariable = false;
+		do {
+			if (!(spawnConfig & kSpawnConfigInject)) {
+				shouldInsertJBEnv = false;
+				break;
+			}
+			if (HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY && !path_is_within_jbroot(path)) {
+				shouldInsertJBEnv = false;
+				break;
+			}
+				// Check if we can find a _SafeMode or _MSSafeMode variable
 		// In this case we do not want to inject anything
 		const char *safeModeValue = envbuf_getenv((const char **)envp, "_SafeMode");
 		const char *msSafeModeValue = envbuf_getenv((const char **)envp, "_MSSafeMode");
@@ -352,9 +446,10 @@ static int spawn_exec_hook_common(bool isExec,
 			}
 		}
 
-		if (access(HOOK_DYLIB_PATH, F_OK) != 0) {
-			// If the hook dylib doesn't exist, don't try to inject it (would crash the process)
-			shouldInsertJBEnv = false;
+			char hookBackingPath[PATH_MAX];
+			if (!hook_dylib_backing_path(hookBackingPath)) {
+				// If the hook dylib doesn't exist, don't try to inject it (would crash the process)
+				shouldInsertJBEnv = false;
 			break;
 		}
 	} while (0);
@@ -423,7 +518,10 @@ static int spawn_exec_hook_common(bool isExec,
 
 	pid_t childPid = -1;
 
-	if ((shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 1) || (!shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 0 && !hasSafeModeVariable)) {
+		bool hookSearchStateMatches = !HOOK_DYLIB_SEARCH_PATH ||
+			(shouldInsertJBEnv ? hookSearchAlreadyInserted : !hookSearchAlreadyInserted);
+		if (((shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 1) ||
+			 (!shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 0 && !hasSafeModeVariable)) && hookSearchStateMatches) {
 		// we're already good, just call orig
 			r = orig(&childPid, envp, desc);
 	}
@@ -432,7 +530,7 @@ static int spawn_exec_hook_common(bool isExec,
 
 		char **envc = envbuf_mutcopy((const char **)envp);
 
-		if (shouldInsertJBEnv) {
+			if (shouldInsertJBEnv) {
 			if (!systemHookAlreadyInserted) {
 				char newLibraryInsert[strlen(HOOK_DYLIB_PATH) + (existingLibraryInserts ? (strlen(existingLibraryInserts) + 1) : 0) + 1];
 				strcpy(newLibraryInsert, HOOK_DYLIB_PATH);
@@ -441,9 +539,18 @@ static int spawn_exec_hook_common(bool isExec,
 					strcat(newLibraryInsert, existingLibraryInserts);
 				}
 				envbuf_setenv(&envc, "DYLD_INSERT_LIBRARIES", newLibraryInsert);
+				}
+				if (HOOK_DYLIB_SEARCH_PATH && !hookSearchAlreadyInserted) {
+					char *newLibrarySearchPath = colon_list_prepend_component(existingLibrarySearchPath, HOOK_DYLIB_SEARCH_PATH);
+					if (!newLibrarySearchPath) {
+						r = ENOMEM;
+						goto env_cleanup;
+					}
+					envbuf_setenv(&envc, "DYLD_LIBRARY_PATH", newLibrarySearchPath);
+					free(newLibrarySearchPath);
+				}
 			}
-		}
-		else {
+			else {
 			if (systemHookAlreadyInserted && existingLibraryInserts) {
 				if (!strcmp(existingLibraryInserts, HOOK_DYLIB_PATH)) {
 					envbuf_unsetenv(&envc, "DYLD_INSERT_LIBRARIES");
@@ -469,14 +576,25 @@ static int spawn_exec_hook_common(bool isExec,
 
 					free(newLibraryInsert);
 				}
-			}
-			envbuf_unsetenv(&envc, "_SafeMode");
+				}
+				if (HOOK_DYLIB_SEARCH_PATH && hookSearchAlreadyInserted && existingLibrarySearchPath) {
+					char *newLibrarySearchPath = colon_list_remove_component(existingLibrarySearchPath, HOOK_DYLIB_SEARCH_PATH);
+					if (!newLibrarySearchPath) {
+						r = ENOMEM;
+						goto env_cleanup;
+					}
+					if (newLibrarySearchPath[0]) envbuf_setenv(&envc, "DYLD_LIBRARY_PATH", newLibrarySearchPath);
+					else envbuf_unsetenv(&envc, "DYLD_LIBRARY_PATH");
+					free(newLibrarySearchPath);
+				}
+				envbuf_unsetenv(&envc, "_SafeMode");
 			envbuf_unsetenv(&envc, "_MSSafeMode");
 		}
 
-			r = orig(&childPid, envc, desc);
+				r = orig(&childPid, envc, desc);
 
-		envbuf_free(envc);
+		env_cleanup:
+				envbuf_free(envc);
 	}
 
 	if (r == 0 && childPid > 0 && (personaFixUid == 0 || personaFixGid == 0)) {

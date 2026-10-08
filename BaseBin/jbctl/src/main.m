@@ -2,6 +2,7 @@
 #import <libjailbreak/jbclient_xpc.h>
 #import <libjailbreak/jbclient_mach.h>
 #import <libjailbreak/stock_fixes.h>
+#import <libjailbreak/roothider/bootlog.h>
 #import "internal.h"
 
 #import <Foundation/Foundation.h>
@@ -177,7 +178,13 @@ int main(int argc, char* argv[])
 		}
 	}
 	else if (!strcmp(cmd, "reboot_userspace")) {
-		return reboot3(RB2_USERREBOOT);
+		roothide_bootlog("jbctl: reboot_userspace calling reboot3");
+		errno = 0;
+		int result = reboot3(RB2_USERREBOOT);
+		char phase[160];
+		snprintf(phase, sizeof(phase), "jbctl: reboot3 returned result=%d errno=%d", result, errno);
+		roothide_bootlog(phase);
+		return result;
 	}
 	else if (!strcmp(cmd, "respring")) {
 		const char *sbreloadPath = JBROOT_PATH("/usr/bin/sbreload");

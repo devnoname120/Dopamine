@@ -11,6 +11,8 @@
 #include "dyld_jbinfo.h"
 
 bool gDyldHookLog = false;
+extern uint64_t gDyldhookBootstrapReturn;
+__attribute__((used)) char gDyldhookBootstrapSandboxExtensions[JBSERVER_SANDBOX_EXTENSIONS_MAX] = {0};
 
 __attribute__((section("__DATA,__jbinfo"))) static char jbinfoSection[0x4000];
 #define jbInfo ((struct dyld_jbinfo *)&jbinfoSection[0])
@@ -246,11 +248,28 @@ void dyldhook_init(uintptr_t kernelParams)
 		}
 		return;		
 	}
-	if (!strstr(insertLibrariesVar, "/usr/lib/systemhook-") && !strstr(insertLibrariesVar, "/basebin/systemhook.dylib")) {
+	if (!strstr(insertLibrariesVar, "/usr/lib/systemhook-") &&
+	    !strstr(insertLibrariesVar, "/basebin/systemhook.dylib") &&
+	    !strstr(insertLibrariesVar, "/basebin/systemhook-")) {
 		if (gDyldHookLog) {
 			_simple_dprintf(2, "Not checking in, no systemhook found in DYLD_INSERT_LIBRARIES (%s)\n", insertLibrariesVar);
 		}
 		return;
+	}
+
+	// No-kcall fallback only needs enough access for stock dyld to load the
+	// direct-JBROOT systemhook.  The parent pre-seeds extensions targeted to
+	// this suspended process; consume them here without doing the full RootHide
+	// process check-in before stock dyld has started.  systemhook will perform
+	// the normal full check-in later, at the historical constructor timing.
+	if (gDyldhookBootstrapReturn != 0) {
+		if (consume_tokenized_sandbox_extensions(gDyldhookBootstrapSandboxExtensions) == 0) {
+			memset(gDyldhookBootstrapSandboxExtensions, 0, sizeof(gDyldhookBootstrapSandboxExtensions));
+			return;
+		}
+		// Preserve the old fallback behavior if the pre-seeded tokens were not
+		// consumable; this keeps explicit/full dyld replacement semantics intact.
+		memset(gDyldhookBootstrapSandboxExtensions, 0, sizeof(gDyldhookBootstrapSandboxExtensions));
 	}
 
 	// If all is well, do check-in right here before dyld_start!

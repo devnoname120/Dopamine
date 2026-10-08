@@ -25,6 +25,18 @@ _MACHOMERGER_START_HOOK:
     // Restore stack
     mov sp, x19
 
+    // In no-kcall bootstrap mode jailbreakd writes the untouched stock-dyld
+    // entrypoint here.  The merged image is then used only for the early
+    // RootHide check-in above; normal process startup continues in stock dyld.
+    adrp x16, _gDyldhookBootstrapReturn@PAGE
+    ldr  x16, [x16, _gDyldhookBootstrapReturn@PAGEOFF]
+    cbz  x16, 1f
+    adrp x17, _gDyldhookBootstrapComplete@PAGE
+    add  x17, x17, _gDyldhookBootstrapComplete@PAGEOFF
+    mov  x15, #1
+    str  x15, [x17]
+    br x16
+1:
     // Jump to real start
     b _MACHOMERGER_REAL_START
 
@@ -105,6 +117,15 @@ DEF_SYSCALL(setgroups, 80)
 
 
 .data
+.align 3
+.global _gDyldhookBootstrapReturn
+_gDyldhookBootstrapReturn:
+    .quad 0
+
+.global _gDyldhookBootstrapComplete
+_gDyldhookBootstrapComplete:
+    .quad 0
+
 .global ___stack_chk_guard
 ___stack_chk_guard:
     .quad 0x1337

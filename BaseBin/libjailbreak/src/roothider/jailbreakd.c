@@ -1,6 +1,7 @@
 #include <spawn.h>
 #include <errno.h>
 #include <stdatomic.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <assert.h>
@@ -130,7 +131,15 @@ int spawnJailbreakd()
 	// posix_spawnattr_setspecialport_np(&attr, bootstraport, TASK_BOOTSTRAP_PORT);
 	// posix_spawnattr_set_registered_ports_np(&attr, (mach_port_t[]){ bootstraport, MACH_PORT_NULL }, 3);
 	posix_spawnattr_set_registered_ports_np(&attr, (mach_port_t[]){ MACH_PORT_NULL, MACH_PORT_NULL, bootstraport }, 3);
-	int ret = posix_spawn(&pid, JBROOT_PATH("/basebin/jailbreakd"), NULL, &attr, (char*[]){"jailbreakd",NULL}, __firstLoad ? NULL :  ((char*[]){"RESPAWN_REQUIRED=1", NULL}));
+	char *rebootEnv[] = { "RESPAWN_REQUIRED=1", NULL };
+	char *fallbackRebootEnv[] = { "RESPAWN_REQUIRED=1", ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV "=1", NULL };
+	char **jailbreakdEnv = NULL;
+	if (!__firstLoad) {
+		const char *fallback = getenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV);
+		bool fallbackEnabled = fallback && strcmp(fallback, "1") == 0;
+		jailbreakdEnv = fallbackEnabled ? fallbackRebootEnv : rebootEnv;
+	}
+	int ret = posix_spawn(&pid, JBROOT_PATH("/basebin/jailbreakd"), NULL, &attr, (char*[]){"jailbreakd",NULL}, jailbreakdEnv);
 	posix_spawnattr_destroy(&attr);
 
 	if (ret != 0) {

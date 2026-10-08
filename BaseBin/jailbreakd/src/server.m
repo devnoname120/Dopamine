@@ -7,6 +7,7 @@
 
 #include <libjailbreak/libjailbreak.h>
 #include <libjailbreak/roothider.h>
+#include <libjailbreak/roothider/bootlog.h>
 
 static int prepareCredentialHelper(pid_t clientPid, pid_t pid, int pidversion, uint64_t deadline)
 {
@@ -107,6 +108,13 @@ void jailbreakd_received_message(mach_port_t port)
 					pid_t pid = xpc_dictionary_get_int64(message, "pid");
 					bool resume = xpc_dictionary_get_bool(message, "resume");
 					pid_t ppid = proc_get_ppid(pid);
+					const char *childPath = proc_get_path(pid,NULL);
+					bool traceXpcProxy = childPath && strcmp(childPath, "/usr/libexec/xpcproxy") == 0;
+					if (traceXpcProxy) {
+						char phase[256];
+						snprintf(phase, sizeof(phase), "jailbreakd: xpcproxy patch begin child=%d parent=%d resume=%d", pid, ppid, resume);
+						roothide_bootlog(phase);
+					}
 					JBLogDebug("spawn patch: client pid=%d, child pid=%d, child's parent pid=%d, child proc=%s", clientPid, pid, ppid, proc_get_path(pid,NULL));
 					if(ppid == clientPid) {
 						if(ppid==1 && resume==false) {
@@ -122,6 +130,11 @@ void jailbreakd_received_message(mach_port_t port)
 					} else {
 						JBLogError("spawn patch denied: %d", pid);
 						result = -1;
+					}
+					if (traceXpcProxy) {
+						char phase[256];
+						snprintf(phase, sizeof(phase), "jailbreakd: xpcproxy patch end child=%d result=%lld", pid, (long long)result);
+						roothide_bootlog(phase);
 					}
 					xpc_dictionary_set_int64(reply, "result", result);
 					break;

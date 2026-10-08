@@ -20,7 +20,10 @@ class CredentialServiceTests(unittest.TestCase):
                 text=True, capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            result = subprocess.run([str(executable)], text=True, capture_output=True, timeout=10)
+            # The fixture validates its 30 ms / 500 ms transport deadlines internally.
+            # Keep the outer process timeout as a deadlock guard, but leave enough
+            # headroom for ASan/libdispatch startup on a loaded host.
+            result = subprocess.run([str(executable)], text=True, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_parent_delegates_before_resuming(self):

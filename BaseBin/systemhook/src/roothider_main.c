@@ -5,6 +5,7 @@
 #include <libgen.h>
 #include <sys/sysctl.h>
 #include <sys/proc_info.h>
+#include <sys/stat.h>
 
 #include <litehook.h>
 
@@ -16,19 +17,68 @@
 #include <libjailbreak/roothider/bootlog.h>
 
 const char* HOOK_DYLIB_PATH = NULL;
+const char* HOOK_DYLIB_SEARCH_PATH = NULL;
+bool HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY = false;
 
 bool dyld_patch_fallback_enabled = false;
+
+#ifndef ROOTHIDE_SILEO_CONSTRUCTOR_TRACE
+#define ROOTHIDE_SILEO_CONSTRUCTOR_TRACE 0
+#endif
 
 static void roothide_loader_trace(const char *phase, const char *path, int result)
 {
 	int savedErrno = errno;
+	const char *traceEnabled = getenv("ROOTHIDE_LOADER_TRACE");
+#if ROOTHIDE_SILEO_CONSTRUCTOR_TRACE
+	if (!traceEnabled || strcmp(traceEnabled, "1") != 0) {
+		const char *name = getprogname();
+		if (!name || strcmp(name, "Sileo") != 0) {
+			errno = savedErrno;
+			return;
+		}
+	}
+#else
+	if (!traceEnabled || strcmp(traceEnabled, "1") != 0) {
+		errno = savedErrno;
+		return;
+	}
+#endif
 	const char *name = getprogname();
-	if (name && strncmp(name, "sshd", 4) == 0) {
+	bool traceProcess = name && (strncmp(name, "sshd", 4) == 0 ||
+		strcmp(name, "xpcproxy") == 0 || strcmp(name, "backboardd") == 0 ||
+		strcmp(name, "audiomxd") == 0 || strcmp(name, "thermalmonitord") == 0 ||
+		strcmp(name, "CommCenter") == 0 || strcmp(name, "Sileo") == 0);
+	if (traceProcess) {
 		char line[224];
 		snprintf(line, sizeof(line), "loader %s result=%d path=%s", phase, result, path ?: "(null)");
 		roothide_bootlog(line);
 	}
 	errno = savedErrno;
+}
+
+static void arm_sileo_constructor_trace(const char *path, char ***envc)
+{
+#if ROOTHIDE_SILEO_CONSTRUCTOR_TRACE
+	if (path && envc && *envc && string_has_suffix(path, "/Applications/Sileo.app/Sileo")) {
+		envbuf_setenv(envc, "ROOTHIDE_SYSTEMHOOK_PHASE_TRACE", "1");
+		envbuf_setenv(envc, "ROOTHIDE_LOADER_TRACE", "1");
+	}
+#else
+	(void)path;
+	(void)envc;
+#endif
+}
+
+static bool paths_refer_to_same_file(const char *left, const char *right)
+{
+	if (!left || !right) return false;
+	if (strcmp(left, right) == 0) return true;
+
+	struct stat leftStat = {0};
+	struct stat rightStat = {0};
+	if (stat(left, &leftStat) != 0 || stat(right, &rightStat) != 0) return false;
+	return leftStat.st_dev == rightStat.st_dev && leftStat.st_ino == rightStat.st_ino;
 }
 
 //export for PatchLoader
@@ -266,10 +316,10 @@ int roothide_systemhook___posix_spawn_posthook(pid_t *restrict pidp, const char 
 					xpc_array_set_value(preferredArchsArray, XPC_ARRAY_APPEND, curArch);
 					xpc_release(curArch);
 				}
-			}
+				}
 
-			// Upload binary to trustcache if needed
-			jbclient_trust_executable_recurse(path, preferredArchsArray);
+				// Upload binary to trustcache if needed
+				jbclient_trust_executable_recurse(path, preferredArchsArray);
 
 			if (preferredArchsArray) {
 				xpc_release(preferredArchsArray);
@@ -292,7 +342,8 @@ int roothide_systemhook___posix_spawn_posthook(pid_t *restrict pidp, const char 
 	}
 
 	if (patch_exec) {
-		if (jbdSpawnExecStart(path, should_resume) != 0) { // jdb fault?
+		int spawnExecStartResult = jbdSpawnExecStart(path, should_resume);
+		if (spawnExecStartResult != 0) { // jdb fault?
 			//restore flags
 			posix_spawnattr_setflags(attrp, flags);
 			return 201;
@@ -305,6 +356,7 @@ int roothide_systemhook___posix_spawn_posthook(pid_t *restrict pidp, const char 
 	if(envbuf_getenv(envc, "DYLD_INSERT_LIBRARIES")) {
 		envbuf_setenv(&envc, "DYLD_IN_CACHE", "0");
 	}
+	arm_sileo_constructor_trace(path, &envc);
 
 	if(!jbclient_dyld_patch_enabled())
 	{
@@ -372,7 +424,8 @@ int roothide_systemhook___execve_posthook(const char *path, char *const argv[], 
 
 	bool traced = false;
 
-	if(jbdExecTraceStart(path, &traced) != 0) { // jdb fault?
+	int traceStartResult = jbdExecTraceStart(path, &traced);
+	if(traceStartResult != 0) { // jdb fault?
 		errno = 203;
 		return -1;
 	}
@@ -384,6 +437,7 @@ int roothide_systemhook___execve_posthook(const char *path, char *const argv[], 
 	if(envbuf_getenv(envc, "DYLD_INSERT_LIBRARIES")) {
 		envbuf_setenv(&envc, "DYLD_IN_CACHE", "0");
 	}
+	arm_sileo_constructor_trace(path, &envc);
 	
 	int ret = __execve_inline(path, argv, envc);
 	int olderr = errno;
@@ -551,7 +605,53 @@ void roothide_init()
 		}
 	}
 
-	HOOK_DYLIB_PATH = strdup(dyld_image_path_containing_address(&__dso_handle));
+	const char *actualHookPath = dyld_image_path_containing_address(&__dso_handle);
+	HOOK_DYLIB_PATH = actualHookPath ? strdup(actualHookPath) : NULL;
+
+	// The no-kcall fallback can ask dyld for the historical /usr/lib path while
+	// resolving the randomized leaf from a private JBROOT search directory.
+	// dyld reports the resolved backing path for the loaded image, so recover the
+	// logical insert identity here and remember only the matching private search
+	// directory for child injection.
+	const char *insertLibraries = getenv("DYLD_INSERT_LIBRARIES");
+	if (insertLibraries && actualHookPath) {
+		const char *actualLeaf = strrchr(actualHookPath, '/');
+		actualLeaf = actualLeaf ? actualLeaf + 1 : actualHookPath;
+		__block char *logicalHookPath = NULL;
+		string_enumerate_components(insertLibraries, ":", ^(const char *path, bool *stop) {
+			const char *leaf = strrchr(path, '/');
+			leaf = leaf ? leaf + 1 : path;
+			if (string_has_prefix(path, "/usr/lib/systemhook-") && strcmp(leaf, actualLeaf) == 0) {
+				logicalHookPath = strdup(path);
+				*stop = true;
+			}
+		});
+
+		if (logicalHookPath) {
+			free((void *)HOOK_DYLIB_PATH);
+			HOOK_DYLIB_PATH = logicalHookPath;
+
+			const char *libraryPath = getenv("DYLD_LIBRARY_PATH");
+			if (libraryPath) {
+				__block char *matchingSearchPath = NULL;
+				string_enumerate_components(libraryPath, ":", ^(const char *path, bool *stop) {
+					char candidate[PATH_MAX];
+					if (snprintf(candidate, sizeof(candidate), "%s/%s", path, actualLeaf) > 0 &&
+						paths_refer_to_same_file(candidate, actualHookPath)) {
+						matchingSearchPath = strdup(path);
+						*stop = true;
+					}
+				});
+					if (matchingSearchPath) {
+						HOOK_DYLIB_SEARCH_PATH = matchingSearchPath;
+						HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY = true;
+						if (strcmp(libraryPath, matchingSearchPath) == 0) {
+							unsetenv("DYLD_LIBRARY_PATH");
+						}
+				}
+			}
+		}
+	}
 
 	int loaderState = parse_dyldhook_jbinfo(NULL, NULL, NULL, NULL);
 	roothide_loader_trace("dyld checkin state", HOOK_DYLIB_PATH, loaderState);

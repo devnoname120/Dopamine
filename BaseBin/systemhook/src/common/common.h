@@ -6,6 +6,8 @@
 
 // #define HOOK_DYLIB_PATH "/usr/lib/systemhook.dylib"
 extern const char* HOOK_DYLIB_PATH;
+extern const char* HOOK_DYLIB_SEARCH_PATH;
+extern bool HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY;
 
 typedef enum 
 {

@@ -28,6 +28,7 @@ class RpcArgumentContractTests(unittest.TestCase):
                      "wrong-array", "wrong-dictionary", "wrong-data", "missing-generic",
                      "valid-scalars", "optional-absent", "data-followed-by-bool",
                      "data-output-followed-by-integer", "data-capacity", "eight-slots",
+                     "caller-token-no-lookup", "output-no-lookup",
                      "unknown-action", "wrong-domain-type", "wrong-action-type",
                      "missing-blacklist-type", "wrong-blacklist-pid", "oversized-blacklist-pid",
                      "wrong-blacklist-path", "valid-blacklist-pid", "valid-blacklist-path",

@@ -19,6 +19,7 @@
 #include "../info.h"
 #include "jailbreakd.h"
 #include "common.h"
+#include "bootlog.h"
 #include "log.h"
 
 bool launchdhookFirstLoad = false;
@@ -214,13 +215,51 @@ bool dyld_patch_enabled()
     return jbinfo(dyld_patch_enabled);
 }
 
+bool roothide_systemhook_dyld_fallback_enabled(void)
+{
+    const char *value = getenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV);
+    return value && strcmp(value, "1") == 0;
+}
+
 int roothide_patch_proc(pid_t pid)
 {
     char path[PATH_MAX]={0};
-    if(dyld_patch_enabled() || process_force_dyld_patch(proc_get_path(pid,path), NULL)) {
-        return proc_patch_dyld(pid);
+    const char *procPath = proc_get_path(pid,path);
+    bool fallback = roothide_systemhook_dyld_fallback_enabled();
+    bool explicitDyld = dyld_patch_enabled() || process_force_dyld_patch(procPath, NULL);
+    bool fallbackDyld = fallback && procPath && isSubPathOf(procPath, JBROOT_PATH(""));
+    bool forceDyld = explicitDyld || fallbackDyld;
+    const char *xpcProxyTraceEnabled = getenv("ROOTHIDE_XPCPROXY_TRACE");
+    bool traceXpcProxy = procPath && strcmp(procPath, "/usr/libexec/xpcproxy") == 0 &&
+        xpcProxyTraceEnabled && strcmp(xpcProxyTraceEnabled, "1") == 0;
+    if (traceXpcProxy) {
+        char phase[256];
+        snprintf(phase, sizeof(phase), "patchproc: xpcproxy begin pid=%d fallback=%d forceDyld=%d", pid, fallback, forceDyld);
+        roothide_bootlog(phase);
     }
-    return proc_patch_csflags(pid);
+    const char *mode = "csflags";
+    int result = 0;
+    if (explicitDyld) {
+        mode = "dyld";
+        result = proc_patch_dyld(pid);
+    }
+    else if (fallbackDyld) {
+        mode = "bootstrap";
+        result = proc_bootstrap_dyld(pid);
+        if (result != 0) {
+            mode = "dyld-fallback";
+            result = proc_patch_dyld(pid);
+        }
+    }
+    else {
+        result = proc_patch_csflags(pid);
+    }
+    if (traceXpcProxy) {
+        char phase[256];
+        snprintf(phase, sizeof(phase), "patchproc: xpcproxy end pid=%d mode=%s result=%d", pid, mode, result);
+        roothide_bootlog(phase);
+    }
+    return result;
 }
 
 int roothide_config_set_spinlock_fix(bool enabled)

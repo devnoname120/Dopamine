@@ -428,3 +428,8 @@ bool is_kcall_available(void)
 		return true;
 	}
 }
+
+bool is_kcall_initialized(void)
+{
+	return gPrimitives.kcall != NULL;
+}

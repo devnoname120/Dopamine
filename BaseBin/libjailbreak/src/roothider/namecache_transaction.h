@@ -53,7 +53,7 @@ static int rh_namecache_writer_lock(void)
 {
     uint64_t lock = ksymbol(namecache_rw_lock);
     uint64_t lock_exclusive = ksymbol(lck_rw_lock_exclusive);
-    if (!lock || !lock_exclusive || !is_kcall_available()) {
+    if (!lock || !lock_exclusive || !is_kcall_initialized()) {
         errno = ENOTSUP;
         return -1;
     }
@@ -69,7 +69,7 @@ static int rh_namecache_writer_unlock(void)
 {
     uint64_t lock = ksymbol(namecache_rw_lock);
     uint64_t lock_done = ksymbol(lck_rw_done);
-    if (!lock || !lock_done || !is_kcall_available()) {
+    if (!lock || !lock_done || !is_kcall_initialized()) {
         errno = ENOTSUP;
         return -1;
     }
@@ -84,7 +84,7 @@ static int rh_namecache_writer_unlock(void)
 static int rh_namecache_retain_vnode(uint64_t vnode)
 {
     uint64_t vnode_ref_ext = ksymbol(vnode_ref_ext);
-    if (!vnode || !vnode_ref_ext || !is_kcall_available()) {
+    if (!vnode || !vnode_ref_ext || !is_kcall_initialized()) {
         errno = ENOTSUP;
         return -1;
     }
@@ -104,12 +104,12 @@ static int rh_namecache_retain_vnode(uint64_t vnode)
 static int rh_namecache_release_vnode(uint64_t vnode)
 {
     uint64_t vnode_rele_ext = ksymbol(vnode_rele_ext);
-    if (!vnode || !vnode_rele_ext || !is_kcall_available()) {
+    if (!vnode || !vnode_rele_ext || !is_kcall_initialized()) {
         errno = ENOTSUP;
         return -1;
     }
-    uint64_t arguments[] = { vnode, 0, 0, 0 };
-    if (kcall(NULL, vnode_rele_ext, 4, arguments) != 0) {
+    uint64_t arguments[] = { vnode, 0, 0 };
+    if (kcall(NULL, vnode_rele_ext, 3, arguments) != 0) {
         errno = EIO;
         return -1;
     }
