@@ -6,7 +6,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-UPSTREAM_REVISION = "939a3a21400f0dc6d6163b2b5999ba2ace0d2732"
+UPSTREAM_REVISION = "1a54e76d515ff5916b64e44d6afbb57d2bc89ee9"
 PORT_SUBMODULE_REVISIONS = {
     "BaseBin/XPF": "7751467e2d7f51cde692108a9f2ac1b63d5c6544",
     "BaseBin/opainject": "bd60149a9d324b5e26c769ffe358eb9935f90b8b",
