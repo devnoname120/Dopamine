@@ -227,7 +227,13 @@ int roothide_patch_proc(pid_t pid)
     const char *procPath = proc_get_path(pid,path);
     bool fallback = roothide_systemhook_dyld_fallback_enabled();
     bool explicitDyld = dyld_patch_enabled() || process_force_dyld_patch(procPath, NULL);
-    bool fallbackDyld = fallback && procPath && isSubPathOf(procPath, JBROOT_PATH(""));
+    // The private-search fallback must also prepare ordinary user apps: Frida
+    // requires their systemhook check-in to allow executable injected pages.
+    // Keep stock Apple executables and RootHide-blacklisted apps untouched.
+    bool fallbackJbroot = fallback && procPath && isSubPathOf(procPath, JBROOT_PATH(""));
+    bool fallbackRemovableApp = fallback && procPath && !fallbackJbroot &&
+        isRemovableBundlePath(procPath) && !isBlacklistedPath(procPath);
+    bool fallbackDyld = fallbackJbroot || fallbackRemovableApp;
     bool forceDyld = explicitDyld || fallbackDyld;
     const char *xpcProxyTraceEnabled = getenv("ROOTHIDE_XPCPROXY_TRACE");
     bool traceXpcProxy = procPath && strcmp(procPath, "/usr/libexec/xpcproxy") == 0 &&
@@ -247,8 +253,16 @@ int roothide_patch_proc(pid_t pid)
         mode = "bootstrap";
         result = proc_bootstrap_dyld(pid);
         if (result != 0) {
-            mode = "dyld-fallback";
-            result = proc_patch_dyld(pid);
+            if (fallbackJbroot) {
+                mode = "dyld-fallback";
+                result = proc_patch_dyld(pid);
+            }
+            else {
+                // The user-app exception is optional: preserving an ordinary app's
+                // launch is more important than forcing its Frida preparation.
+                mode = "csflags-fallback";
+                result = proc_patch_csflags(pid);
+            }
         }
     }
     else {

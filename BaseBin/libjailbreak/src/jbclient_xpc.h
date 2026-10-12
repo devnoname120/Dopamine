@@ -53,6 +53,7 @@ mach_port_t jbclient_jailbreakd_lookup();
 mach_port_t jbclient_jailbreakd_checkin();
 bool jbclient_blacklist_check_pid(pid_t pid);
 bool jbclient_blacklist_check_path(const char* path);
+int jbclient_blacklist_check_path_checked(const char *path, bool *blacklistedOut);
 bool jbclient_blacklist_check_bundle(const char* bundle);
 int jbclient_trust_library_recurse(const char *libraryPath, void *addressInCaller);
 int jbclient_trust_executable_recurse(const char *executablePath, xpc_object_t preferredArchsArray);

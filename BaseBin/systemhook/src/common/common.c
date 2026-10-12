@@ -354,6 +354,17 @@ static bool path_is_within_jbroot(const char *path)
 	return resolvedPath[rootLength] == '\0' || resolvedPath[rootLength] == '/';
 }
 
+static bool path_eligible_for_private_search_injection(const char *path)
+{
+	if (path_is_within_jbroot(path)) return true;
+	// Outside JBROOT, the no-kcall fallback is for ordinary installed apps only.
+	// This binary links the RootHide RPC client, not the Objective-C blacklist
+	// implementation. A failed lookup must not opt an app back into injection.
+	if (!isRemovableBundlePath(path)) return false;
+	bool blacklisted = false;
+	return jbclient_blacklist_check_path_checked(path, &blacklisted) == 0 && !blacklisted;
+}
+
 static int spawn_exec_hook_common(bool isExec,
 						   const char *path,
 						   char *const argv[restrict],
@@ -414,7 +425,7 @@ static int spawn_exec_hook_common(bool isExec,
 				shouldInsertJBEnv = false;
 				break;
 			}
-			if (HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY && !path_is_within_jbroot(path)) {
+			if (HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY && !path_eligible_for_private_search_injection(path)) {
 				shouldInsertJBEnv = false;
 				break;
 			}

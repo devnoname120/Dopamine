@@ -26,6 +26,7 @@ class SpawnAttributeOwnershipTests(unittest.TestCase):
         implementation = enum + '\nstatic const char *HOOK_DYLIB_SEARCH_PATH = NULL;\n'
         implementation += 'static bool HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY = false;\n'
         implementation += 'static bool path_is_within_jbroot(const char *path) { (void)path; return false; }\n'
+        implementation += 'static bool path_eligible_for_private_search_injection(const char *path) { (void)path; return false; }\n'
         implementation += "\n".join(function_source(path, name) for name in names)
         implementation = implementation.replace("__builtin_available(iOS 17.6, *)", "fixtureModern")
         scenarios = (

@@ -6,9 +6,14 @@
 #include <sys/types.h>
 #include "../BaseBin/libjailbreak/src/jbserver_domains.h"
 
-typedef struct { unsigned references; bool reply; } FixtureObject;
+typedef struct { unsigned references; bool reply; int type; } FixtureObject;
 typedef FixtureObject *xpc_object_t;
+#define XPC_TYPE_DICTIONARY 1
+#define XPC_TYPE_INT64 2
+#define XPC_TYPE_BOOL 3
 static FixtureObject objects[1024];
+static FixtureObject statusObj = {.references = 1, .reply = true, .type = XPC_TYPE_INT64};
+static FixtureObject boolObj = {.references = 1, .reply = true, .type = XPC_TYPE_BOOL};
 static unsigned allocated, live, invalid_accesses, calls;
 static int mode;
 
@@ -20,7 +25,7 @@ static xpc_object_t fixture_object(bool reply)
 {
     if (allocated == sizeof(objects) / sizeof(objects[0])) return NULL;
     xpc_object_t object = &objects[allocated++];
-    *object = (FixtureObject){.references = 1, .reply = reply};
+    *object = (FixtureObject){.references = 1, .reply = reply, .type = XPC_TYPE_DICTIONARY};
     live++;
     return object;
 }
@@ -43,6 +48,26 @@ static bool xpc_dictionary_get_bool(xpc_object_t object, const char *key)
 {
     require_live(object);
     if (!object->reply) invalid_accesses++;
+    return true;
+}
+static int xpc_get_type(xpc_object_t object) { require_live(object); return object->type; }
+static xpc_object_t xpc_dictionary_get_value(xpc_object_t object, const char *key)
+{
+    require_live(object);
+    if (!object->reply) invalid_accesses++;
+    if (!strcmp(key, "result")) return &statusObj;
+    if (!strcmp(key, "blacklisted")) return &boolObj;
+    invalid_accesses++;
+    return NULL;
+}
+static int64_t xpc_int64_get_value(xpc_object_t object)
+{
+    require_live(object);
+    return mode == 2 ? -17 : 0;
+}
+static bool xpc_bool_get_value(xpc_object_t object)
+{
+    require_live(object);
     return true;
 }
 static xpc_object_t jbserver_xpc_send_dict(xpc_object_t request)

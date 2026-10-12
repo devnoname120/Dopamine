@@ -12,6 +12,7 @@ static void roothide_bootlog(const char *line) { (void)line; }
 
 static bool preference;
 static bool forced_path;
+static bool blacklisted_path;
 static const char *fixture_path;
 static int dyld_calls;
 static int bootstrap_calls;
@@ -23,6 +24,15 @@ static bool process_force_dyld_patch(const char *path, const char **argv)
 {
     (void)path; (void)argv;
     return forced_path;
+}
+static bool isRemovableBundlePath(const char *path)
+{
+    return path && strncmp(path, "/private/var/containers/Bundle/Application/", 43) == 0;
+}
+static bool isBlacklistedPath(const char *path)
+{
+    (void)path;
+    return blacklisted_path;
 }
 static char *proc_get_path(pid_t pid, char path[PATH_MAX])
 {
@@ -44,7 +54,7 @@ static bool fixture_isSubPathOf(const char *child, const char *parent)
 
 static void reset(void)
 {
-    preference = forced_path = false;
+    preference = forced_path = blacklisted_path = false;
     fixture_path = "/System/Library/PrivateFrameworks/IMCore.framework/IMTransferAgent";
     dyld_calls = bootstrap_calls = csflag_calls = 0;
     bootstrap_result = 0;
@@ -74,6 +84,12 @@ int main(void)
     CHECK(roothide_patch_proc(42) == 11 && bootstrap_calls == 1 && dyld_calls == 1 && csflag_calls == 0);
 
     reset();
+    CHECK(setenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV, "1", 1) == 0);
+    fixture_path = "/fixture/jbroot/usr/bin/ssh";
+    blacklisted_path = true;
+    CHECK(roothide_patch_proc(42) == 0 && bootstrap_calls == 1 && dyld_calls == 0 && csflag_calls == 0);
+
+    reset();
     preference = true;
     CHECK(roothide_patch_proc(42) == 11 && dyld_calls == 1 && bootstrap_calls == 0 && csflag_calls == 0);
 
@@ -91,6 +107,36 @@ int main(void)
     forced_path = true;
     CHECK(roothide_patch_proc(42) == 11 && dyld_calls == 1 && bootstrap_calls == 0 && csflag_calls == 0);
 
-    puts("8 systemhook loader policy cases passed");
+    reset();
+    CHECK(setenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV, "1", 1) == 0);
+    fixture_path = "/private/var/containers/Bundle/Application/12345678-1234-1234-1234-123456789ABC/Hinge.app/Hinge";
+    CHECK(roothide_patch_proc(42) == 0 && bootstrap_calls == 1 && dyld_calls == 0 && csflag_calls == 0);
+
+    reset();
+    fixture_path = "/private/var/containers/Bundle/Application/12345678-1234-1234-1234-123456789ABC/Hinge.app/Hinge";
+    CHECK(roothide_patch_proc(42) == 22 && bootstrap_calls == 0 && dyld_calls == 0 && csflag_calls == 1);
+
+    reset();
+    CHECK(setenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV, "1", 1) == 0);
+    fixture_path = "/private/var/containers/Bundle/Application/12345678-1234-1234-1234-123456789ABC/Hinge.app/Hinge";
+    bootstrap_result = -1;
+    // Optional private-search injection must not make a normal app unlaunchable
+    // when its arm64e entry cannot be safely re-signed for dyld bootstrap.
+    CHECK(roothide_patch_proc(42) == 22 && bootstrap_calls == 1 && dyld_calls == 0 && csflag_calls == 1);
+
+    reset();
+    CHECK(setenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV, "1", 1) == 0);
+    fixture_path = "/private/var/containers/Bundle/Application/12345678-1234-1234-1234-123456789ABC/Hinge.app/Hinge";
+    preference = true;
+    bootstrap_result = -1;
+    CHECK(roothide_patch_proc(42) == 11 && bootstrap_calls == 0 && dyld_calls == 1 && csflag_calls == 0);
+
+    reset();
+    CHECK(setenv(ROOTHIDE_SYSTEMHOOK_DYLD_FALLBACK_ENV, "1", 1) == 0);
+    fixture_path = "/private/var/containers/Bundle/Application/12345678-1234-1234-1234-123456789ABC/Hinge.app/Hinge";
+    blacklisted_path = true;
+    CHECK(roothide_patch_proc(42) == 22 && bootstrap_calls == 0 && dyld_calls == 0 && csflag_calls == 1);
+
+    puts("14 systemhook loader policy cases passed");
     return 0;
 }

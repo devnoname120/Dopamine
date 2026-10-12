@@ -34,6 +34,26 @@
     [self setupStack];
 }
 
+#if WOLF_TESTING
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    static BOOL attempted = NO;
+    if (attempted) return;
+    attempted = YES;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL removing = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"removeJailbreakEnabled" fallback:NO];
+        if (!removing && self.view.window && self.jailbreakBtn.enabled && !self.jailbreakBtn.didExpand && !self.presentedViewController) {
+            NSLog(@"Wolf test launch: invoking Jailbreak button once");
+            [self.jailbreakBtn.button sendActionsForControlEvents:UIControlEventPrimaryActionTriggered];
+        } else {
+            NSLog(@"Wolf test launch: activation skipped by UI/removal guard");
+        }
+    });
+}
+#endif
+
 -(void)setupStack
 {
     UIStackView *stackView = [[UIStackView alloc] init];

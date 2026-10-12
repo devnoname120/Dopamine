@@ -110,23 +110,34 @@ bool jbclient_blacklist_check_pid(pid_t pid)
 	return blacklisted;
 }
 
-bool jbclient_blacklist_check_path(const char* path)
+int jbclient_blacklist_check_path_checked(const char *path, bool *blacklistedOut)
 {
-	bool blacklisted = false;
-
-    xpc_object_t xargs = xpc_dictionary_create_empty();
+	if (!path || !blacklistedOut) return -1;
+	xpc_object_t xargs = xpc_dictionary_create_empty();
+	if (!xargs) return -1;
     xpc_dictionary_set_string(xargs, "checktype", "path");
     xpc_dictionary_set_string(xargs, "checkvalue", path);
 	xpc_object_t xreply = jbserver_xpc_send(JBS_DOMAIN_ROOTHIDE, JBS_ROOTHIDE_BLACKLIST_CHECK, xargs);
 	xpc_release(xargs);
-	if (xreply) {
-		int64_t result = xpc_dictionary_get_int64(xreply, "result");
-		if(result == 0) {
-			blacklisted = xpc_dictionary_get_bool(xreply, "blacklisted");
+	if (!xreply) return -1;
+	int result = -1;
+	if (xpc_get_type(xreply) == XPC_TYPE_DICTIONARY) {
+		xpc_object_t status = xpc_dictionary_get_value(xreply, "result");
+		xpc_object_t blacklisted = xpc_dictionary_get_value(xreply, "blacklisted");
+		if (status && xpc_get_type(status) == XPC_TYPE_INT64 && xpc_int64_get_value(status) == 0 &&
+			blacklisted && xpc_get_type(blacklisted) == XPC_TYPE_BOOL) {
+			*blacklistedOut = xpc_bool_get_value(blacklisted);
+			result = 0;
 		}
-		xpc_release(xreply);
 	}
+	xpc_release(xreply);
+	return result;
+}
 
+bool jbclient_blacklist_check_path(const char* path)
+{
+	bool blacklisted = false;
+	(void)jbclient_blacklist_check_path_checked(path, &blacklisted);
 	return blacklisted;
 }
 

@@ -15,7 +15,7 @@ class SystemhookLoaderFallbackTests(unittest.TestCase):
             executable = compile_fixture(pathlib.Path(directory), implementation, "tests/systemhook_loader_fallback_tests.c")
             result = run_fixture(executable)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("8 systemhook loader policy cases passed", result.stdout)
+            self.assertIn("14 systemhook loader policy cases passed", result.stdout)
 
     def test_fallback_bootstraps_stock_dyld_instead_of_replacing_it(self):
         source = (ROOT / "BaseBin/libjailbreak/src/roothider/dyld_patch.m").read_text()
@@ -169,7 +169,7 @@ class SystemhookLoaderFallbackTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("systemhook path identity cases passed", result.stdout)
 
-    def test_recovered_private_search_path_only_propagates_to_jbroot_descendants(self):
+    def test_recovered_private_search_path_respects_target_scope(self):
         header = (ROOT / "BaseBin/systemhook/src/common/common.h").read_text()
         common = (ROOT / "BaseBin/systemhook/src/common/common.c").read_text()
         systemhook = (ROOT / "BaseBin/systemhook/src/roothider_main.c").read_text()
@@ -191,10 +191,32 @@ class SystemhookLoaderFallbackTests(unittest.TestCase):
         spawn = function_source("BaseBin/systemhook/src/common/common.c", "spawn_exec_hook_common")
         self.assertRegex(
             spawn,
-            r"(?s)HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY\s*&&\s*!path_is_within_jbroot\(path\).*?"
+            r"(?s)HOOK_DYLIB_SEARCH_PATH_JBROOT_ONLY\s*&&\s*!path_eligible_for_private_search_injection\(path\).*?"
             r"shouldInsertJBEnv\s*=\s*false;",
         )
         self.assertNotIn("ROOTHIDE_SSHD_EXEC_TRACE", spawn)
+
+    def test_private_search_fallback_can_reach_user_apps_for_frida_but_not_system_daemons(self):
+        spawn = function_source("BaseBin/systemhook/src/common/common.c", "spawn_exec_hook_common")
+        self.assertIn("!path_eligible_for_private_search_injection(path)", spawn)
+        policy = function_source("BaseBin/systemhook/src/common/common.c", "path_eligible_for_private_search_injection")
+        self.assertIn("path_is_within_jbroot(path)", policy)
+        self.assertIn("jbclient_blacklist_check_path_checked(path, &blacklisted) == 0 && !blacklisted", policy)
+        with tempfile.TemporaryDirectory(prefix="private-search-scope-") as directory:
+            executable = compile_fixture(
+                pathlib.Path(directory), policy, "tests/private_search_injection_scope_tests.c"
+            )
+            result = run_fixture(executable)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("6 private-search injection scope cases passed", result.stdout)
+
+    def test_blacklist_rpc_lookup_distinguishes_allow_from_transport_failure(self):
+        checked = function_source("BaseBin/libjailbreak/src/jbclient_roothide.c", "jbclient_blacklist_check_path_checked")
+        with tempfile.TemporaryDirectory(prefix="blacklist-rpc-contract-") as directory:
+            executable = compile_fixture(pathlib.Path(directory), checked, "tests/blacklist_rpc_contract_tests.c")
+            result = run_fixture(executable)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("10 blacklist RPC contract cases passed", result.stdout)
 
     def test_jbroot_target_scope_uses_canonical_filesystem_boundary(self):
         implementation = "\n".join([

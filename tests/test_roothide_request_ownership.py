@@ -10,7 +10,8 @@ class RootHideRequestOwnershipTests(unittest.TestCase):
         implementation = function_source("BaseBin/libjailbreak/src/jbclient_xpc.c", "jbserver_xpc_send")
         path = "BaseBin/libjailbreak/src/jbclient_roothide.c"
         for name in ("jbclient_roothide_jailbroken", "jbclient_palehide_present",
-                     "jbclient_blacklist_check_pid", "jbclient_blacklist_check_path",
+                     "jbclient_blacklist_check_pid", "jbclient_blacklist_check_path_checked",
+                     "jbclient_blacklist_check_path",
                      "jbclient_blacklist_check_bundle", "jbclient_dyld_patch_enabled",
                      "jbclient_set_dyld_patch"):
             implementation += "\n" + function_source(path, name)
